@@ -17,6 +17,8 @@ import org.rust.lang.core.stubs.RsPathStub
 val RsPath.hasColonColon: Boolean get() = stub?.hasColonColon ?: (coloncolon != null)
 val RsPath.hasCself: Boolean get() = stub?.hasCself ?: (cself != null)
 
+fun RsPath.resolve() = reference.resolve()
+
 
 abstract class RsPathImplMixin : RsStubbedElementImpl<RsPathStub>,
                                  RsPath {
