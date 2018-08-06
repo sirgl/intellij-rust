@@ -12,7 +12,7 @@ class AddMatchWildcardPatternIntentionTest : RsIntentionTestBase(AddMatchWildcar
         fn main() {
             let a = 3;
             match a {
-                _ => {},
+                _ => {}
             }
         }
     """)
