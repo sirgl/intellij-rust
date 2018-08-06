@@ -443,6 +443,11 @@
                          enabledByDefault="true" level="ERROR"
                          implementationClass="org.rust.ide.inspections.RsAssignToImmutableInspection"/>
 
+        <localInspection language="Rust" groupName="Rust"
+                         displayName="Match Check"
+                         enabledByDefault="true" level="ERROR"
+                         implementationClass="org.rust.ide.inspections.RsMatchCheckInspection"/>
+
         <!-- Surrounders -->
 
         <lang.surroundDescriptor language="Rust"
