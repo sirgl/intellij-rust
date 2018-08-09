@@ -4,21 +4,22 @@ class RsMatchCheckInspectionTest : RsInspectionsTestBase(RsMatchCheckInspection(
     fun testSimple() = checkByText("""
         enum ONE {
             A,
-            B
-        }
+            B,
+}
 
         enum TWO {
-            A(i32, u32),
+            A(i32),
             B {
-                a: i32
-            }
+                a: ONE,
+                b: i32
+            },
         }
 
         fn main() {
-            let a = TWO::A(2, 2);
+            let a = TWO::A(2);
             match a {
-                TWO::A(_) => {},
-                TWO::B => {},
+                TWO::A(_) => {}
+                TWO::B {a: ONE::A, b: 3} => {}
             }
         }
 

@@ -6,16 +6,35 @@ import org.rust.lang.core.psi.ext.RsFieldsOwner
 import org.rust.lang.core.types.ty.*
 import org.rust.lang.core.types.type
 
-sealed class MyNode
+sealed class Node
 
 enum class Type { TUPLE, STRUCT, EMPTY }
 
-data class Struct(val struct: RsStructItem) : MyNode()
-data class Enum(val enum: RsEnumItem) : MyNode()
-data class EnumVariant(val enum: RsEnumItem, val variant: RsEnumVariant, val type: Type) : MyNode()
+data class Struct(val struct: RsStructItem) : Node()
+data class Enum(val enum: RsEnumItem) : Node()
+data class EnumVariant(val enum: RsEnumItem, val variant: RsEnumVariant, val type: Type) : Node()
 
-data class Integer(val ty: TyInteger) : MyNode()
-data class Float(val ty: TyFloat) : MyNode()
+data class Primitive(val ty: TyPrimitive) : Node()
+data class Integer(val ty: TyInteger) : Node()
+data class Float(val ty: TyFloat) : Node()
+
+class TreeNode(val value: Node) {
+    var parent: TreeNode? = null
+    var children: MutableList<TreeNode> = mutableListOf()
+
+    fun addChild(node: TreeNode?) {
+        node ?: return
+        children.add(node)
+        node.parent = this
+    }
+
+    override fun toString(): String {
+        var s = "$value"
+        if (!children.isEmpty()) s += " {" + children.map { it.toString() } + "}"
+        return s
+    }
+}
+
 
 
 private fun <T : RsFieldsOwner> T.valueType(): Type = when {
@@ -58,8 +77,9 @@ private fun buildTreeOfType(ty: Ty): TreeNode? {
                 is TyFloat -> TreeNode(Float(ty))
                 else -> null /* ignore */
             }
-            else -> null
+            else -> TreeNode(Primitive(ty))
         }
+//        is TyTypeParameter -> {}
         is TyAdt -> {
             when (ty.item) {
                 is RsEnumItem -> TreeNode(Enum(ty.item)).apply { addEnumTree(ty.item) }
@@ -67,12 +87,56 @@ private fun buildTreeOfType(ty: Ty): TreeNode? {
                 else -> null
             }
         }
+//        is TyProjection -> {}
+//        is TyAnon -> {}
         else -> {
+            println("else ty: $ty")
             null
         }
     }
 }
 
+private fun TreeNode.getLeafList(): List<TreeNode> {
+    val list = mutableListOf<TreeNode>()
+    children.forEach {
+        if (it.children.isEmpty()) list.add(it)
+        else list.addAll(it.getLeafList())
+    }
+    return list
+}
+
+val Node.pattern: String
+    get() = when (this) {
+        is Integer, is Float -> "_"
+        is Enum -> enum.identifier?.text ?: ""
+        is EnumVariant -> variant.identifier.text
+        is Struct -> struct.identifier?.text ?: ""
+        is Primitive -> ty.name
+    }
+
+private fun TreeNode.getPattern(pat: String = ""): String {
+    return when (value) {
+        is Integer -> value.pattern
+//        is EnumVariant ->
+        else -> ""
+    }
+}
+
+//private fun TreeNode.getPattern(): String {
+//    val parentPattern = parent?.getPattern() ?: ""
+//    return when(value) {
+//        is Integer, is Float -> {
+//            parentPattern + "_"
+//        }
+//        is EnumVariant -> {
+//            parentPattern + "::${value.variant.identifier.text}"
+//        }
+//        is Enum -> {
+//            parentPattern + (value.enum.identifier?.text ?: "" )
+//        }
+//        else -> parentPattern
+//    }
+//}
 
 class RsMatchCheckInspection : RsLocalInspectionTool() {
     override fun getDisplayName() = "Match Check" //FIXME name
@@ -80,54 +144,15 @@ class RsMatchCheckInspection : RsLocalInspectionTool() {
     override fun buildVisitor(holder: ProblemsHolder, isOnTheFly: Boolean) = object : RsVisitor() {
         override fun visitMatchExpr(o: RsMatchExpr) {
             val ty = o.expr?.type ?: return
-            println(buildTreeOfType(ty))
-        }
-    }
-
-    /*private fun debugPat(pat: RsPat): String {
-        return when (pat) {
-            is RsPatSlice -> "slice[${pat.dotdot};patList{" + pat.patList.joinToString { debugPat(it) } + "}]"
-
-            is RsPatTupleStruct ->
-                "tupleStruct[${pat.dotdot};${pat.path};patList{" + pat.patList.joinToString { debugPat(it) } + "}]"
-            is RsPatIdent ->
-                "ident[${pat.at};${pat.pat?.let(::debugPat)};${pat.patBinding}]"
-
-            is RsPatRef -> "ref[${pat.and};${pat.mut};${debugPat(pat.pat)}]"
-
-            is RsPatTup -> "tup[${pat.dotdot};patList{" + pat.patList.joinToString { debugPat(it) } + "}]"
-
-            is RsPatStruct -> "struct[${pat.dotdot};${pat.path};patFieldList{" + pat.patFieldList.joinToString { it.text } + "}]"
-
-            is RsPatConst -> "const[${pat.expr}(${pat.expr.text})]"
-
-            is RsPatMacro -> "macro[${pat.macroCall}(${pat.macroCall.text})]"
-
-            is RsPatUniq -> "uniq[unimpl]"
-
-            is RsPatWild -> "wild[${pat.underscore}]"
-
-            is RsPatRange -> "range[unimpl]"
-
-            else -> ""
+            val typeTree = buildTreeOfType(ty) ?: return
+            println(typeTree)
+            println(typeTree.getLeafList())
+            println(typeTree.getLeafList().map { it.getPattern() })
 
         }
-    }*/
-}
-
-class TreeNode(var value: MyNode) {
-    var parent: TreeNode? = null
-    var children: MutableList<TreeNode> = mutableListOf()
-
-    fun addChild(node: TreeNode?) {
-        node ?: return
-        children.add(node)
-        node.parent = this
     }
 
-    override fun toString(): String {
-        var s = "$value"
-        if (!children.isEmpty()) s += " {\n\t" + children.map { it.toString() } + " \n}"
-        return s
-    }
+
 }
+
+
