@@ -1,9 +1,7 @@
 package org.rust.ide.inspections
 
 import com.intellij.psi.PsiElement
-import org.rust.lang.core.psi.RsEnumItem
-import org.rust.lang.core.psi.RsEnumVariant
-import org.rust.lang.core.psi.RsStructItem
+import org.rust.lang.core.psi.*
 import org.rust.lang.core.psi.ext.RsFieldsOwner
 import org.rust.lang.core.types.ty.*
 import org.rust.lang.core.types.type
@@ -17,9 +15,13 @@ data class Struct(val struct: RsStructItem) : Node(struct.identifier)
 data class Enum(val enum: RsEnumItem) : Node(enum.identifier)
 data class EnumVariant(val enum: Enum, val variant: RsEnumVariant, val type: FieldsType) : Node(variant.identifier)
 
-data class Primitive(val ty: TyPrimitive) : Node()
-data class Integer(val ty: TyInteger) : Node()
-data class Float(val ty: TyFloat) : Node()
+sealed class Primitive(val ty: TyPrimitive) : Node()
+class SimplePrimitive(ty: TyPrimitive) : Primitive(ty)
+class Integer(ty: TyInteger) : Primitive(ty)
+class Float(ty: TyFloat) : Primitive(ty)
+
+data class Binding(val binding: RsPatBinding) : Node()
+data class Wild(val binding: RsPatWild) : Node()
 
 class TyTree(val value: Node) {
     var parent: TyTree? = null
@@ -33,6 +35,7 @@ class TyTree(val value: Node) {
             is Integer -> mutableListOf()
             is Float -> mutableListOf()
             is Unknown -> mutableListOf()
+            is Binding, is Wild -> mutableListOf()
         }
         list.forEach { it.parent = this }
         list
@@ -76,7 +79,7 @@ val Ty.toNode: Node
                 is TyFloat -> Float(this)
                 else -> Unknown /* ignore */
             }
-            else -> Primitive(this)
+            else -> SimplePrimitive(this)
         }
         is TyAdt -> when (this.item) {
             is RsEnumItem -> Enum(this.item)
