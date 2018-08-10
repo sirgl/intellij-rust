@@ -13,9 +13,10 @@ class RsMatchCheckInspection : RsLocalInspectionTool() {
             val tree = TyTree(ty.toNode)
             val listPatList = o.matchBody?.matchArmList?.map { it.patList }
             val patTrees: MutableList<PatTree> = mutableListOf()
+            val root = PatTree(ty.toNode)
             listPatList?.forEach { patList ->
                 patList.forEach { pat ->
-                    patTrees.add(buildPatTree(pat))
+                    buildPatternTree(root, pat)
                     println(patTrees.last())
                 }
             }
@@ -37,56 +38,32 @@ fun RsPath.toNode(): Node {
     }
 }
 
-fun buildPatTree(pat: RsPat): PatTree {
+fun buildPatternTree(root: PatTree, pat: RsPat) {
     when (pat) {
+        is RsPatWild -> {
+            root.addChild(PatTree(Wild(pat)))
+            return
+        }
         is RsPatIdent -> {
-            if (pat.pat == null) {
-                return PatTree(Binding(pat.patBinding))
+            // Maybe exist some other case?
+            root.addChild(PatTree(Binding(pat.patBinding)))
+        }
+        is RsPatConst -> {
+            val expr = pat.expr
+            when (expr) {
+                is RsLitExpr -> {
+                    root.addChild(PatTree(expr.type.toNode))
+                }
+                is RsPathExpr -> {
+                    root.addChild(PatTree(expr.path.toNode()))
+                }
             }
         }
         is RsPatStruct -> {
-            val node = pat.path.toNode()
-            when (node) {
-                is EnumVariant -> {
-                    return PatTree(node).also { tree ->
-                        pat.patFieldList.forEach {
-                            tree.addChild(buildPatTree(it.pat ?: return@forEach))
-                        }
-                    }
-                }
-            }
-        }
-        is RsPatTupleStruct -> {
-            val node = pat.path.toNode()
-            when (node) {
-                is EnumVariant -> {
-                    return PatTree(node).also { tree ->
-                        pat.patList.forEach {
-                            tree.addChild(buildPatTree(it))
-                        }
-                    }
-                }
-            }
-        }
-        is RsPatWild -> return PatTree(Wild(pat))
-        is RsPatConst -> {
-            val pathList = pat.expr.children.filter { it as? RsPath != null }.map { it as RsPath }
-            if (pathList.size != 1) return PatTree(Unknown)
-            val path = pathList.first()
-            val node = path.toNode()
-            when (node) {
-                is EnumVariant -> {
-                    return PatTree(node)
-                }
-                is Struct -> {
-                }//TODO
-                else -> return PatTree(Unknown)
-            }
+
         }
     }
-    return PatTree(Unknown)
 }
-
 class PatTree(val value: Node) {
     var parent: PatTree? = null
     var children: MutableList<PatTree> = mutableListOf()
