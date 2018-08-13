@@ -17,7 +17,7 @@ class RsMatchCheckInspection : RsLocalInspectionTool() {
             listPatList?.forEach { patList ->
                 patList.forEach { pat ->
                     buildPatternTree(root, pat)
-                    println(patTrees.last())
+                    println(root)
                 }
             }
         }
@@ -38,6 +38,9 @@ fun RsPath.toNode(): Node {
     }
 }
 
+
+//TODO проверить существование ветки
+// Придумать способ идентифицировать параметры в листе
 fun buildPatternTree(root: PatTree, pat: RsPat) {
     when (pat) {
         is RsPatWild -> {
@@ -60,10 +63,35 @@ fun buildPatternTree(root: PatTree, pat: RsPat) {
             }
         }
         is RsPatStruct -> {
+            val node = pat.path.toNode()
+            //TODO для структуры
+            if (node is EnumVariant && root.value == node.enum) {
+                val child = PatTree(node)
+                root.addChild(child)
+                pat.patFieldList.forEach { patField ->
+                    if (patField.pat == null) throw Exception("PatField ${patField.text} is null!") //Возможно?
+                    buildPatternTree(child, patField.pat ?: return@forEach)
+                }
+            }
+        }
+        is RsPatTupleStruct -> {
+            val node = pat.path.toNode()
+            //TODO для структуры
+            if (node is EnumVariant && root.value == node.enum) {
+                var child = root.children.find { it.value == node }
+                if (child == null) {
+                    child = PatTree(node)
+                    root.addChild(child)
+                }
 
+                pat.patList.forEach { pattern ->
+                    buildPatternTree(child, pattern)
+                }
+            }
         }
     }
 }
+
 class PatTree(val value: Node) {
     var parent: PatTree? = null
     var children: MutableList<PatTree> = mutableListOf()
