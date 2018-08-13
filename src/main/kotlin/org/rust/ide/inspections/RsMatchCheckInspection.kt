@@ -45,7 +45,6 @@ fun buildPatternTree(root: PatTree, pat: RsPat) {
     when (pat) {
         is RsPatWild -> {
             root.addChild(PatTree(Wild(pat)))
-            return
         }
         is RsPatIdent -> {
             // Maybe exist some other case?
@@ -58,6 +57,13 @@ fun buildPatternTree(root: PatTree, pat: RsPat) {
                     root.addChild(PatTree(expr.type.toNode))
                 }
                 is RsPathExpr -> {
+                    val node = expr.path.toNode()
+                    when (node) {
+                        is EnumVariant -> {
+                            val enum = PatTree(node.enum)
+                            //CHECK IF CONST IS ENUMVARIANT(NEED ADD ENUM NODE)
+                        }
+                    }
                     root.addChild(PatTree(expr.path.toNode()))
                 }
             }
