@@ -25,6 +25,7 @@ fun checkArms(arms: List<Pair<List<RsPat>, RsMatchArmGuard?>>, holder: ProblemsH
     var catchAll = false
     arms.forEachIndexed { index, pair ->
         println("${pair.first} isUseful = ${isUseful(seen, pair.first)}")
+        seen.add(pair.first)
     }
 }
 
@@ -88,22 +89,29 @@ fun specializeRow(row: List<RsPat>, constructor: Constructor): List<RsPat> {
         }
         // p[0] == c
         rowConstrs[0] == constructor -> {
-            val newRow = mutableListOf<RsPat>()
             when (constructor) {
                 is ConstantValue -> {
                     return row.slice(1..row.size)
                 }
                 is Variant -> {
                     val variant = constructor.variant
-                    when {
+                    return when {
                         variant.blockFields != null -> {
                             val pat = constructor.pat as RsPatStruct
-                            pat.patFieldList
-
+                            val newRow = pat.patFieldList.mapNotNull { it.pat }.plus(row.slice(1..row.size))
+                            println("variant has blockFields => newRow $newRow")
+                            newRow
                         }
                         variant.tupleFields != null -> {
+                            val pat = constructor.pat as RsPatTupleStruct
+                            val newRow = pat.patList.plus(row.slice(1..row.size))
+                            println("variant has tupleFields => newRow ${newRow}")
+                            newRow
                         }
                         else -> {
+                            val newRow = row.slice(1..row.size)
+                            println("variant without field => newRow $newRow")
+                            newRow
                         }
                     }
                 }
