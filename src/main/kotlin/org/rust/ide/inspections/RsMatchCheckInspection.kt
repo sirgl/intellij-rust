@@ -2,8 +2,6 @@ package org.rust.ide.inspections
 
 import com.intellij.codeInspection.ProblemsHolder
 import org.rust.lang.core.psi.*
-import org.rust.lang.core.types.ty.Ty
-import org.rust.lang.core.types.ty.TyUnknown
 import org.rust.lang.core.types.type
 
 class RsMatchCheckInspection : RsLocalInspectionTool() {
@@ -20,11 +18,13 @@ class RsMatchCheckInspection : RsLocalInspectionTool() {
     }
 }
 
+
 fun checkArms(arms: List<Pair<List<RsPat>, RsMatchArmGuard?>>, holder: ProblemsHolder) {
+    println("<top>.checkArms(arms = $arms, holder = $holder)")
     val seen = mutableListOf<List<RsPat>>()
     var catchAll = false
     arms.forEachIndexed { index, pair ->
-        isUseful(seen, pair.first)
+        println("${pair.first} isUseful = ${isUseful(seen, pair.first)}")
     }
 }
 
@@ -33,24 +33,16 @@ fun checkArms(arms: List<Pair<List<RsPat>, RsMatchArmGuard?>>, holder: ProblemsH
 fun isUseful(matrix: List<List<RsPat>>, v: List<RsPat>): Boolean {
     println("<top>.isUseful(matrix = $matrix, v = $v)")
 
+    //// Base
 
     // Base case if we are pattern-matching on ()
-    if (v.isEmpty()) {
-        // return value is based on whether our matrix has a row or not
-        return matrix.isEmpty()
+    if (matrix.width == 0) {
+        return matrix.height == 0
     }
-
 
     //// Induction
 
-    // Check matrix and pattern length
-    if (matrix.all { it.size == v.size }) throw Exception("matrix width != pattern width")
-
-    // Получим тип
-    val ty = matrix.map { it[0].type }
-
     val constr = v[0].constructors
-
 
     // If constr is Constructor
     when {
@@ -60,8 +52,8 @@ fun isUseful(matrix: List<List<RsPat>>, v: List<RsPat>): Boolean {
         }
         // Pattern v[0] is a constructed pattern (v[0] = c(r0, r1, ..., ra) )
         !constr.isEmpty() -> {
-            // Get specialize matrix S(c, P). Width = a + n - 1
-
+            // Get specializeMatrix matrix S(c, P). Width = a + n - 1
+            TODO()
         }
         // Pattern v[0] is wildcard
         constr.isEmpty() -> {
@@ -73,62 +65,84 @@ fun isUseful(matrix: List<List<RsPat>>, v: List<RsPat>): Boolean {
     return true
 }
 
-fun specialize(constr: Constructor, matrix: List<List<RsPat>>): List<List<RsPat>> {
-    println("<top>.specialize(constr = $constr, matrix = $matrix)")
+fun specializeMatrix(constr: Constructor, matrix: List<List<RsPat>>): List<List<RsPat>> {
+    println("<top>.specializeMatrix(constr = $constr, matrix = $matrix)")
     val newMatrix = mutableListOf<List<RsPat>>()
     for (row in matrix) {
-        val rowConstrs = row[0].constructors
-        when {
-            // Wildcard
-            rowConstrs.isEmpty() -> {
+        TODO("Get specialized row and add in new matrix")
+    }
+    return emptyList()
+}
 
-            }
-            // Or-pattern
-            rowConstrs.size > 1 -> {
-
-            }
-            // p[0] == c
-            rowConstrs[0] == constr -> {
-                val newRow = mutableListOf<RsPat>()
-                when (constr) {
-                    is Single -> newMatrix.add(row.slice(1..row.size))
-                    is Variant -> TODO()
-                    is ConstantValue -> TODO()
-                    is ConstantRange -> TODO()
-                    is Slice -> TODO()
+fun specializeRow(row: List<RsPat>, constructor: Constructor): List<RsPat> {
+    println("<top>.specializeRow(row = $row, constructor = $constructor)")
+    val rowConstrs = row[0].constructors
+    when {
+        // Wildcard
+        rowConstrs.isEmpty() -> {
+            TODO("first pattern is wildcard")
+        }
+        // Or-pattern
+        rowConstrs.size > 1 -> {
+            TODO("first pattern is or-pattern")
+        }
+        // p[0] == c
+        rowConstrs[0] == constructor -> {
+            val newRow = mutableListOf<RsPat>()
+            when (constructor) {
+                is ConstantValue -> {
+                    return row.slice(1..row.size)
                 }
+                is Variant -> {
+                    val variant = constructor.variant
+                    when {
+                        variant.blockFields != null -> {
+                            val pat = constructor.pat as RsPatStruct
+                            pat.patFieldList
+
+                        }
+                        variant.tupleFields != null -> {
+                        }
+                        else -> {
+                        }
+                    }
+                }
+                is Single -> TODO()
+                is ConstantRange -> TODO()
+                is Slice -> TODO()
             }
-            // p[0] != c
-            rowConstrs[0] != constr -> {
-            }
+        }
+        // p[0] != c
+        rowConstrs[0] != constructor -> {
+            TODO("first pattern is different constructor")
         }
     }
     return emptyList()
 }
 
-
-sealed class Constructor
+sealed class Constructor(open val pat: RsPat)
 
 /// The constructor of all patterns that don't vary by constructor,
 /// e.g. struct patterns and fixed-length arrays.
 //Single
-class Single : Constructor()
+data class Single(override val pat: RsPat) : Constructor(pat)
 
 /// Enum variants.
 // Variant(DefId)
-data class Variant(val variant: RsEnumVariant) : Constructor()
+data class Variant(override val pat: RsPat, val variant: RsEnumVariant) : Constructor(pat)
 
 /// Literal values.
 //ConstantValue(&'tcx ty::Const<'tcx>),
-data class ConstantValue(val expr: RsExpr) : Constructor()
+data class ConstantValue(override val pat: RsPat, val expr: RsExpr) : Constructor(pat)
 
 /// Ranges of literal values (`2...5` and `2..5`).
 //ConstantRange(&'tcx ty::Const<'tcx>, &'tcx ty::Const<'tcx>, RangeEnd),
-data class ConstantRange(val start: RsPatConst, val end: RsPatConst, val includeEnd: Boolean = false) : Constructor()
+data class ConstantRange(override val pat: RsPat, val start: RsPatConst, val end: RsPatConst, val includeEnd: Boolean = false) : Constructor(pat)
+
 
 /// Array patterns of length n.
 //Slice(u64),
-class Slice : Constructor()
+data class Slice(override val pat: RsPat) : Constructor(pat)
 
 /*/// Determines the constructors that the given pattern can be specialized to.
 ///
@@ -171,13 +185,13 @@ fn pat_constructors<'tcx>(cx: &mut MatchCheckCtxt,
 val RsPat.constructors: List<Constructor>
     get() {
         return when (this) {
-            is RsPatStruct -> path.getConstructors()
-            is RsPatTupleStruct -> path.getConstructors()
-            is RsPatRef -> listOf(Single())
-            is RsPatUniq -> listOf(Single()) // Не понимаю что это за шаблоны такие. Кажется `box a`
-            is RsPatConst -> listOf(ConstantValue(this.expr)) // Надо бы достать значение. Ну только если нужно
-            is RsPatRange -> listOf(ConstantRange(patConstList[0], patConstList[1], dotdotdot == null)) // TODO ..=
-            is RsPatTup -> listOf(Single()) // Вместе с структурой и енумом?
+            is RsPatStruct -> path.singleOrVariant(this)
+            is RsPatTupleStruct -> path.singleOrVariant(this)
+            is RsPatRef -> listOf(Single(this))
+            is RsPatUniq -> listOf(Single(this)) // Не понимаю что это за шаблоны такие. Кажется `box a`
+            is RsPatConst -> listOf(ConstantValue(this, this.expr)) // Надо бы достать значение. Ну только если нужно
+            is RsPatRange -> listOf(ConstantRange(this, patConstList[0], patConstList[1], dotdotdot == null)) // TODO ..=
+            is RsPatTup -> listOf(Single(this)) // Вместе с структурой и енумом?
             is RsPatIdent, is RsPatWild -> emptyList()
             is RsPatMacro -> TODO()
             is RsPatSlice -> TODO()
@@ -185,26 +199,20 @@ val RsPat.constructors: List<Constructor>
         }
     }
 
-fun RsPath.getConstructors(): List<Constructor> {
+fun RsPath.singleOrVariant(pat: RsPat): List<Constructor> {
     val item = reference.resolve()
-    return if (item is RsEnumVariant) listOf(Variant(item))
-    else listOf(Single())
+    return if (item is RsEnumVariant) listOf(Variant(pat, item))
+    else listOf(Single(pat))
 }
 
-val RsPat.type: Ty
-    get() = when (this) {
-        is RsPatTupleStruct -> TODO()
-        is RsPatMacro -> TODO()
-        is RsPatTup -> TODO()
-        is RsPatConst -> TODO()
-        is RsPatUniq -> TODO()
-        is RsPatSlice -> TODO()
-        is RsPatRange -> TODO()
-        is RsPatRef -> TODO()
-        is RsPatIdent -> TODO()
-        is RsPatWild -> TODO()
-        is RsPatStruct -> TODO()
-        else -> TyUnknown/*ignore*/
+
+val List<List<*>>.width: Int
+    get() {
+        return this.maxWith(Comparator { p0, p1 ->
+            if (p0.size > p1.size) 1
+            else -1
+        })?.size ?: 0
     }
 
-
+val List<List<*>>.height: Int
+    get() = this.size
