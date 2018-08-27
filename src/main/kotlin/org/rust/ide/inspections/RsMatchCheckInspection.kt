@@ -2,6 +2,7 @@ package org.rust.ide.inspections
 
 import com.intellij.codeInspection.ProblemsHolder
 import org.rust.lang.core.psi.*
+import org.rust.lang.core.psi.ext.RsFieldsOwner
 import org.rust.lang.core.types.type
 
 class RsMatchCheckInspection : RsLocalInspectionTool() {
@@ -10,6 +11,7 @@ class RsMatchCheckInspection : RsLocalInspectionTool() {
     override fun buildVisitor(holder: ProblemsHolder, isOnTheFly: Boolean) = object : RsVisitor() {
         override fun visitMatchExpr(o: RsMatchExpr) {
             val ty = o.expr?.type ?: return
+//            println(((RsPsiFactory(holder.project).createExpression("if let _ = 3") as RsIfExpr).condition?.pat as RsPatWild))
             val arms = o.matchBody?.matchArmList?.map {
                 it.patList to it.matchArmGuard
             } ?: emptyList()
@@ -79,86 +81,83 @@ fun specializeMatrix(constr: Constructor, matrix: List<List<RsPat>>): List<List<
 fun specializeRow(constructor: Constructor, row: List<RsPat>): List<List<RsPat>> {
     println("<top>.specializeRow(constructor = $constructor, row = $row)")
     val rowConstructors = row[0].constructors
-    when {
-        // Wildcard
-        rowConstructors.isEmpty() -> {
-            TODO("first pattern is wildcard")
-        }
-        // Or-pattern
-        rowConstructors.size > 1 -> {
-            TODO("first pattern is or-pattern")
-        }
-        // p[0] == c
-        rowConstructors[0]::class == constructor::class -> {
-            when (constructor) {
-                is ConstantValue -> {
-//                    val pat = constructor.pat
-//                    val expr = constructor.expr
-//                    return listOf(row.subList(1, row.size))
-                    return emptyList()
-                }
-                is Variant -> {
-                    val variant = constructor.variant
-                    return when {
-                        variant.blockFields != null -> {
-                            val pat = constructor.pat as RsPatStruct
-                            val newRow = pat.patFieldList.mapNotNull { it.pat }.plus(row.subList(1, row.size))
-                            println("variant has blockFields => newRow $newRow")
-                            listOf(newRow)
-                        }
-                        variant.tupleFields != null -> {
-                            val pat = constructor.pat as RsPatTupleStruct
-                            val newRow = pat.patList.plus(row.subList(1, row.size))
-                            println("variant has tupleFields => newRow $newRow")
-                            listOf(newRow)
-                        }
-                        else -> {
-                            val newRow = row.subList(1, row.size)
-                            println("variant without field => newRow $newRow")
-                            listOf(newRow)
-                        }
-                    }
-                }
-                is Single -> {
-                    TODO("First constructor is single")
+    val result: MutableList<List<RsPat>> = mutableListOf()
 
-
-                }
-                is ConstantRange -> TODO("First constructor is constRange")
-                is Slice -> TODO("First constructor is slice")
+    val pat = row[0]
+    when (pat) {
+        is RsPatIdent, is RsPatWild -> {
+            val prefix = mutableListOf<RsPat>()
+            (1..constructor.size).forEach {
+                prefix.add(pat)
+            }
+            result.add(prefix.plus(row.subList(1, row.size)))
+            println("\tWild: $row to $result")
+        }
+        is RsPatStruct -> {
+            val prefix = mutableListOf<RsPat>()
+            if (pat.path.singleOrVariant(pat) == constructor) {
+                TODO("ДОДЕЛАТЬ")
             }
         }
-        // p[0] != c
-        rowConstructors[0]::class != constructor::class -> {
-            TODO("first pattern is different constructor")
-        }
+        is RsPatTupleStruct -> TODO()
+        is RsPatRef -> TODO()
+        is RsPatUniq -> TODO()
+        is RsPatConst -> TODO()
+        is RsPatRange -> TODO()
+        is RsPatTup -> TODO()
+        is RsPatMacro -> TODO()
+        is RsPatSlice -> TODO()
+        else -> TODO()
     }
+
     return emptyList()
 }
 
-sealed class Constructor(open val pat: RsPat)
+fun patternForVariant() {
+
+}
+
+sealed class Constructor
 
 /// The constructor of all patterns that don't vary by constructor,
 /// e.g. struct patterns and fixed-length arrays.
 //Single
-data class Single(override val pat: RsPat) : Constructor(pat)
+data class Single(val pat: RsPat) : Constructor()
 
 /// Enum variants.
 // Variant(DefId)
-data class Variant(override val pat: RsPat, val variant: RsEnumVariant) : Constructor(pat)
+data class Variant(val pat: RsPat, val variant: RsEnumVariant) : Constructor()
 
 /// Literal values.
 //ConstantValue(&'tcx ty::Const<'tcx>),
-data class ConstantValue(override val pat: RsPat, val expr: RsExpr) : Constructor(pat)
+data class ConstantValue(val pat: RsPat, val expr: RsExpr) : Constructor()
 
 /// Ranges of literal values (`2...5` and `2..5`).
 //ConstantRange(&'tcx ty::Const<'tcx>, &'tcx ty::Const<'tcx>, RangeEnd),
-data class ConstantRange(override val pat: RsPat, val start: RsPatConst, val end: RsPatConst, val includeEnd: Boolean = false) : Constructor(pat)
-
+data class ConstantRange(val pat: RsPat, val start: RsPatConst, val end: RsPatConst, val includeEnd: Boolean = false) : Constructor()
 
 /// Array patterns of length n.
 //Slice(u64),
-data class Slice(override val pat: RsPat) : Constructor(pat)
+data class Slice(val pat: RsPat) : Constructor()
+
+val Constructor.size: Int
+    get() {
+        return when (this) {
+            is Single -> {
+                when (this.pat) {
+                    is RsPatStruct -> (this.pat.path.reference.resolve() as RsFieldsOwner).size
+                    is RsPatTupleStruct -> (this.pat.path.reference.resolve() as RsFieldsOwner).size
+                    else -> TODO("Check for another case")
+                }
+            }
+            is Variant -> {
+                this.variant.size
+            }
+            is ConstantValue -> 1
+            is ConstantRange -> TODO()
+            is Slice -> TODO()
+        }
+    }
 
 /*/// Determines the constructors that the given pattern can be specialized to.
 ///
@@ -198,6 +197,9 @@ fn pat_constructors<'tcx>(cx: &mut MatchCheckCtxt,
     }
 }*/
 
+val RsFieldsOwner.size: Int
+    get() = tupleFields?.tupleFieldDeclList?.size ?: blockFields?.fieldDeclList?.size ?: 0
+
 val RsPat.constructors: List<Constructor>
     get() {
         return when (this) {
@@ -223,9 +225,7 @@ fun RsPath.singleOrVariant(pat: RsPat): List<Constructor> {
 
 
 val List<List<*>>.width: Int
-    get() = maxWith(Comparator.comparing<List<*>, Int> {
-        it.size
-    })?.size ?: 0
+    get() = maxWith(Comparator.comparing<List<*>, Int> { it.size })?.size ?: 0
 
 val List<List<*>>.height: Int
     get() = size
