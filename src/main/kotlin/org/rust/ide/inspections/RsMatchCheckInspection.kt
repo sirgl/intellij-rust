@@ -33,6 +33,7 @@ fun checkArms(arms: List<Pair<List<RsPat>, RsMatchArmGuard?>>, holder: ProblemsH
 // Use algorithm from 3.1 http://moscova.inria.fr/~maranget/papers/warn/warn004.html
 fun isUseful(matrix: List<List<RsPat>>, v: List<RsPat>): Boolean {
     println("<top>.isUseful(matrix = $matrix, v = $v)")
+    val matrix = matrix
 
     //// Base
 
@@ -54,7 +55,7 @@ fun isUseful(matrix: List<List<RsPat>>, v: List<RsPat>): Boolean {
         // Pattern v[0] is a constructed pattern (v[0] = c(r0, r1, ..., ra) )
         !constr.isEmpty() -> {
             // Get specializeMatrix matrix S(c, P). Width = a + n - 1
-            TODO()
+            return isUseful(specializeMatrix(constr.first(), matrix), specializeRow(constr.first(), v).first())
         }
         // Pattern v[0] is wildcard
         constr.isEmpty() -> {
@@ -70,12 +71,13 @@ fun specializeMatrix(constr: Constructor, matrix: List<List<RsPat>>): List<List<
     println("<top>.specializeMatrix(constr = $constr, matrix = $matrix)")
     val newMatrix = mutableListOf<List<RsPat>>()
     for (row in matrix) {
-        TODO("Get specialized row and add in new matrix")
+        specializeRow(constr, row).forEach { newMatrix.add(it) }
+//        TODO("Get specialized row and add in new matrix")
     }
     return emptyList()
 }
 
-fun specializeRow(row: List<RsPat>, constructor: Constructor): List<RsPat> {
+fun specializeRow(constructor: Constructor, row: List<RsPat>): List<List<RsPat>> {
     println("<top>.specializeRow(row = $row, constructor = $constructor)")
     val rowConstrs = row[0].constructors
     when {
@@ -88,30 +90,30 @@ fun specializeRow(row: List<RsPat>, constructor: Constructor): List<RsPat> {
             TODO("first pattern is or-pattern")
         }
         // p[0] == c
-        rowConstrs[0] == constructor -> {
+        rowConstrs[0]::class == constructor::class -> {
             when (constructor) {
                 is ConstantValue -> {
-                    return row.slice(1..row.size)
+                    return listOf(row.subList(1, row.size))
                 }
                 is Variant -> {
                     val variant = constructor.variant
                     return when {
                         variant.blockFields != null -> {
                             val pat = constructor.pat as RsPatStruct
-                            val newRow = pat.patFieldList.mapNotNull { it.pat }.plus(row.slice(1..row.size))
+                            val newRow = pat.patFieldList.mapNotNull { it.pat }.plus(row.subList(1, row.size))
                             println("variant has blockFields => newRow $newRow")
-                            newRow
+                            listOf(newRow)
                         }
                         variant.tupleFields != null -> {
                             val pat = constructor.pat as RsPatTupleStruct
-                            val newRow = pat.patList.plus(row.slice(1..row.size))
-                            println("variant has tupleFields => newRow ${newRow}")
-                            newRow
+                            val newRow = pat.patList.plus(row.subList(1, row.size))
+                            println("variant has tupleFields => newRow $newRow")
+                            listOf(newRow)
                         }
                         else -> {
-                            val newRow = row.slice(1..row.size)
+                            val newRow = row.subList(1, row.size)
                             println("variant without field => newRow $newRow")
-                            newRow
+                            listOf(newRow)
                         }
                     }
                 }
@@ -121,7 +123,7 @@ fun specializeRow(row: List<RsPat>, constructor: Constructor): List<RsPat> {
             }
         }
         // p[0] != c
-        rowConstrs[0] != constructor -> {
+        rowConstrs[0]::class != constructor::class -> {
             TODO("first pattern is different constructor")
         }
     }
@@ -215,12 +217,10 @@ fun RsPath.singleOrVariant(pat: RsPat): List<Constructor> {
 
 
 val List<List<*>>.width: Int
-    get() {
-        return this.maxWith(Comparator { p0, p1 ->
-            if (p0.size > p1.size) 1
-            else -1
-        })?.size ?: 0
-    }
+    get() = maxWith(Comparator { p0, p1 ->
+        if (p0.size > p1.size) 1
+        else -1
+    })?.size ?: 0
 
 val List<List<*>>.height: Int
-    get() = this.size
+    get() = size
