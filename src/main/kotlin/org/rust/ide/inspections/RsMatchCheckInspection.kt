@@ -48,7 +48,6 @@ fun isUseful(matrix: List<List<RsPat>>, v: List<RsPat>): Boolean {
 
     // If constr is Constructor
     when {
-
         // Pattern v is or-pattern
         v.size > 1 -> {
         }
@@ -74,26 +73,29 @@ fun specializeMatrix(constr: Constructor, matrix: List<List<RsPat>>): List<List<
         specializeRow(constr, row).forEach { newMatrix.add(it) }
 //        TODO("Get specialized row and add in new matrix")
     }
-    return emptyList()
+    return newMatrix
 }
 
 fun specializeRow(constructor: Constructor, row: List<RsPat>): List<List<RsPat>> {
-    println("<top>.specializeRow(row = $row, constructor = $constructor)")
-    val rowConstrs = row[0].constructors
+    println("<top>.specializeRow(constructor = $constructor, row = $row)")
+    val rowConstructors = row[0].constructors
     when {
         // Wildcard
-        rowConstrs.isEmpty() -> {
+        rowConstructors.isEmpty() -> {
             TODO("first pattern is wildcard")
         }
         // Or-pattern
-        rowConstrs.size > 1 -> {
+        rowConstructors.size > 1 -> {
             TODO("first pattern is or-pattern")
         }
         // p[0] == c
-        rowConstrs[0]::class == constructor::class -> {
+        rowConstructors[0]::class == constructor::class -> {
             when (constructor) {
                 is ConstantValue -> {
-                    return listOf(row.subList(1, row.size))
+//                    val pat = constructor.pat
+//                    val expr = constructor.expr
+//                    return listOf(row.subList(1, row.size))
+                    return emptyList()
                 }
                 is Variant -> {
                     val variant = constructor.variant
@@ -117,13 +119,17 @@ fun specializeRow(constructor: Constructor, row: List<RsPat>): List<List<RsPat>>
                         }
                     }
                 }
-                is Single -> TODO()
-                is ConstantRange -> TODO()
-                is Slice -> TODO()
+                is Single -> {
+                    TODO("First constructor is single")
+
+
+                }
+                is ConstantRange -> TODO("First constructor is constRange")
+                is Slice -> TODO("First constructor is slice")
             }
         }
         // p[0] != c
-        rowConstrs[0]::class != constructor::class -> {
+        rowConstructors[0]::class != constructor::class -> {
             TODO("first pattern is different constructor")
         }
     }
@@ -201,7 +207,7 @@ val RsPat.constructors: List<Constructor>
             is RsPatUniq -> listOf(Single(this)) // Не понимаю что это за шаблоны такие. Кажется `box a`
             is RsPatConst -> listOf(ConstantValue(this, this.expr)) // Надо бы достать значение. Ну только если нужно
             is RsPatRange -> listOf(ConstantRange(this, patConstList[0], patConstList[1], dotdotdot == null)) // TODO ..=
-            is RsPatTup -> listOf(Single(this)) // Вместе с структурой и енумом?
+            is RsPatTup -> listOf(Single(this)) // Вместе со структурой и енумом?
             is RsPatIdent, is RsPatWild -> emptyList()
             is RsPatMacro -> TODO()
             is RsPatSlice -> TODO()
@@ -217,9 +223,8 @@ fun RsPath.singleOrVariant(pat: RsPat): List<Constructor> {
 
 
 val List<List<*>>.width: Int
-    get() = maxWith(Comparator { p0, p1 ->
-        if (p0.size > p1.size) 1
-        else -1
+    get() = maxWith(Comparator.comparing<List<*>, Int> {
+        it.size
     })?.size ?: 0
 
 val List<List<*>>.height: Int

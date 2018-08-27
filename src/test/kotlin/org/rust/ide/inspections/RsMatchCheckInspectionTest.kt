@@ -29,19 +29,19 @@ class RsMatchCheckInspectionTest : RsInspectionsTestBase(RsMatchCheckInspection(
                 b: 2
             };
             let b = 2;
-            match b {
-                1 | 2 => {},
-                2 => {},
-                1 .. 2 => {},
-                4 ... 5 => {},
-                _ => {},
-                x => {},
-                () => {}
-            }
-//            match a {
-//                ONE::A{a: _, b: x} => {},
-//                ONE::B(TWO::A, _) => {},
+//            match b {
+//                1 | 2 => {},
+//                2 => {},
+//                1 .. 2 => {},
+//                4 ... 5 => {},
+//                _ => {},
+//                x => {},
+//                () => {}
 //            }
+            match a {
+                ONE::A{a: _, b: x} => {},
+                ONE::B(TWO::A, _) => {},
+            }
         }
 
 
