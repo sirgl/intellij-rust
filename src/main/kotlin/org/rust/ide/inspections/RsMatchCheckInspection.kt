@@ -3,6 +3,7 @@ package org.rust.ide.inspections
 import com.intellij.codeInspection.ProblemsHolder
 import org.rust.lang.core.psi.*
 import org.rust.lang.core.psi.ext.RsFieldsOwner
+import org.rust.lang.core.types.ty.Ty
 import org.rust.lang.core.types.type
 
 class RsMatchCheckInspection : RsLocalInspectionTool() {
@@ -113,89 +114,117 @@ fun specializeRow(constructor: Constructor, row: List<RsPat>): List<List<RsPat>>
     return emptyList()
 }
 
-fun patternForVariant() {
+sealed class Constructor {
 
+    /// The constructor of all patterns that don't vary by constructor,
+    /// e.g. struct patterns and fixed-length arrays.
+    //Single
+    data class Single(val pat: RsPat) : Constructor()
+
+    /// Enum variants.
+    // Variant(DefId)
+    data class Variant(val pat: RsPat, val variant: RsEnumVariant) : Constructor()
+
+    /// Literal values.
+    //ConstantValue(&'tcx ty::Const<'tcx>),
+    data class ConstantValue(val pat: RsPat, val expr: RsExpr) : Constructor()
+
+    /// Ranges of literal values (`2...5` and `2..5`).
+    //ConstantRange(&'tcx ty::Const<'tcx>, &'tcx ty::Const<'tcx>, RangeEnd),
+    data class ConstantRange(val pat: RsPat, val start: RsPatConst, val end: RsPatConst, val includeEnd: Boolean = false) : Constructor()
+
+    /// Array patterns of length n.
+    //Slice(u64),
+    data class Slice(val pat: RsPat) : Constructor()
 }
 
-sealed class Constructor
+data class Pattern(val ty: Ty, val kind: PatternKind)
+sealed class PatternKind {
+    object Wild : PatternKind()
 
-/// The constructor of all patterns that don't vary by constructor,
-/// e.g. struct patterns and fixed-length arrays.
-//Single
-data class Single(val pat: RsPat) : Constructor()
+    /// x, ref x, x @ P, etc
+    /*Binding {
+        mutability: Mutability,
+        name: ast::Name,
+        mode: BindingMode<'tcx>,
+        var: ast::NodeId,
+        ty: Ty<'tcx>,
+        subpattern: Option<Pattern<'tcx>>,
+    }*/
+    data class Binding(val ty: Ty, val subpattern: Pattern?) : PatternKind()
 
-/// Enum variants.
-// Variant(DefId)
-data class Variant(val pat: RsPat, val variant: RsEnumVariant) : Constructor()
 
-/// Literal values.
-//ConstantValue(&'tcx ty::Const<'tcx>),
-data class ConstantValue(val pat: RsPat, val expr: RsExpr) : Constructor()
+    /// Foo(...) or Foo{...} or Foo, where `Foo` is a variant name from an adt with >1 variants
+    /*Variant {
+        adt_def: &'tcx AdtDef,
+        substs: &'tcx Substs<'tcx>,
+        variant_index: usize,
+        subpatterns: Vec<FieldPattern<'tcx>>,
+    }*/
+    data class Variant(val variantIndex: Int, val subpatterns: List<Pattern>) : PatternKind()
 
-/// Ranges of literal values (`2...5` and `2..5`).
-//ConstantRange(&'tcx ty::Const<'tcx>, &'tcx ty::Const<'tcx>, RangeEnd),
-data class ConstantRange(val pat: RsPat, val start: RsPatConst, val end: RsPatConst, val includeEnd: Boolean = false) : Constructor()
+    /// (...), Foo(...), Foo{...}, or Foo, where `Foo` is a variant name from an adt with 1 variant
+    /*Leaf {
+        subpatterns: Vec<FieldPattern<'tcx>>,
+    }*/
+    data class Leaf(val subpatterns: List<Pattern>) : PatternKind()
 
-/// Array patterns of length n.
-//Slice(u64),
-data class Slice(val pat: RsPat) : Constructor()
+    /// box P, &P, &mut P, etc
+    /*Deref {
+        subpattern: Pattern<'tcx>,
+    }*/
+    data class Deref(val subpattern: Pattern) : PatternKind()
+
+    /*Constant {
+        value: &'tcx ty::Const<'tcx>,
+    }*/
+    data class Constant(val value: RsConstant) : PatternKind()
+
+    /*Range {
+        lo: &'tcx ty::Const<'tcx>,
+        hi: &'tcx ty::Const<'tcx>,
+        end: RangeEnd,
+    }*/
+    data class Range(val lc: RsConstant, val rc: RsConstant, val included: Boolean) : PatternKind()
+
+    /// matches against a slice, checking the length and extracting elements.
+    /// irrefutable when there is a slice pattern and both `prefix` and `suffix` are empty.
+    /// e.g. `&[ref xs..]`.
+    /*Slice {
+        prefix: Vec<Pattern<'tcx>>,
+        slice: Option<Pattern<'tcx>>,
+        suffix: Vec<Pattern<'tcx>>,
+    }*/
+    data class Slice(val prefix: List<Pattern>, val slice: Pattern?, val suffix: List<Pattern>) : PatternKind()
+
+    /// fixed match against an array, irrefutable
+    /*Array {
+        prefix: Vec<Pattern<'tcx>>,
+        slice: Option<Pattern<'tcx>>,
+        suffix: Vec<Pattern<'tcx>>,
+    }*/
+    data class Array(val prefix: List<Pattern>, val slice: Pattern?, val suffix: List<Pattern>) : PatternKind()
+}
+
 
 val Constructor.size: Int
     get() {
         return when (this) {
-            is Single -> {
+            is Constructor.Single -> {
                 when (this.pat) {
                     is RsPatStruct -> (this.pat.path.reference.resolve() as RsFieldsOwner).size
                     is RsPatTupleStruct -> (this.pat.path.reference.resolve() as RsFieldsOwner).size
                     else -> TODO("Check for another case")
                 }
             }
-            is Variant -> {
+            is Constructor.Variant -> {
                 this.variant.size
             }
-            is ConstantValue -> 1
-            is ConstantRange -> TODO()
-            is Slice -> TODO()
+            is Constructor.ConstantValue -> 1
+            is Constructor.ConstantRange -> TODO()
+            is Constructor.Slice -> TODO()
         }
     }
-
-/*/// Determines the constructors that the given pattern can be specialized to.
-///
-/// In most cases, there's only one constructor that a specific pattern
-/// represents, such as a specific enum variant or a specific literal value.
-/// Slice patterns, however, can match slices of different lengths. For instance,
-/// `[a, b, ..tail]` can match a slice of length 2, 3, 4 and so on.
-///
-/// Returns None in case of a catch-all, which can't be specialized.
-fn pat_constructors<'tcx>(cx: &mut MatchCheckCtxt,
-    pat: &Pattern<'tcx>,
-    pcx: PatternContext)
-        -> Option<Vec<Constructor<'tcx>>> {
-    match *pat.kind {
-        PatternKind::Binding { .. } | PatternKind::Wild => ++++++
-              None,
-        PatternKind::Leaf { .. } | PatternKind::Deref { .. } =>
-              Some(vec![Single]),
-        PatternKind::Variant { adt_def, variant_index, .. } =>
-              Some(vec![Variant(adt_def.variants[variant_index].did)]),
-        PatternKind::Constant { value } =>
-              Some(vec![ConstantValue(value)]),
-        PatternKind::Range { lo, hi, end } =>
-              Some(vec![ConstantRange(lo, hi, end)]),
-        PatternKind::Array { .. } => match pcx.ty.sty {
-              ty::TyArray(_, length) => Some(vec![Slice(length.unwrap_usize(cx.tcx))]),
-        _ => span_bug!(pat.span, "bad ty {:?} for array pattern", pcx.ty)
-        },
-        PatternKind::Slice { ref prefix, ref slice, ref suffix } => {
-              let pat_len = prefix.len() as u64 + suffix.len() as u64;
-              if slice.is_some() {
-                  Some((pat_len..pcx.max_slice_length+1).map(Slice).collect())
-              } else {
-                  Some(vec![Slice(pat_len)])
-              }
-        }
-    }
-}*/
 
 val RsFieldsOwner.size: Int
     get() = tupleFields?.tupleFieldDeclList?.size ?: blockFields?.fieldDeclList?.size ?: 0
@@ -205,11 +234,11 @@ val RsPat.constructors: List<Constructor>
         return when (this) {
             is RsPatStruct -> path.singleOrVariant(this)
             is RsPatTupleStruct -> path.singleOrVariant(this)
-            is RsPatRef -> listOf(Single(this))
-            is RsPatUniq -> listOf(Single(this)) // Не понимаю что это за шаблоны такие. Кажется `box a`
-            is RsPatConst -> listOf(ConstantValue(this, this.expr)) // Надо бы достать значение. Ну только если нужно
-            is RsPatRange -> listOf(ConstantRange(this, patConstList[0], patConstList[1], dotdotdot == null)) // TODO ..=
-            is RsPatTup -> listOf(Single(this)) // Вместе со структурой и енумом?
+            is RsPatRef -> listOf(Constructor.Single(this))
+            is RsPatUniq -> listOf(Constructor.Single(this)) // Не понимаю что это за шаблоны такие. Кажется `box a`
+            is RsPatConst -> listOf(Constructor.ConstantValue(this, this.expr)) // Надо бы достать значение. Ну только если нужно
+            is RsPatRange -> listOf(Constructor.ConstantRange(this, patConstList[0], patConstList[1], dotdotdot == null)) // TODO ..=
+            is RsPatTup -> listOf(Constructor.Single(this)) // Вместе со структурой и енумом?
             is RsPatIdent, is RsPatWild -> emptyList()
             is RsPatMacro -> TODO()
             is RsPatSlice -> TODO()
@@ -219,8 +248,8 @@ val RsPat.constructors: List<Constructor>
 
 fun RsPath.singleOrVariant(pat: RsPat): List<Constructor> {
     val item = reference.resolve()
-    return if (item is RsEnumVariant) listOf(Variant(pat, item))
-    else listOf(Single(pat))
+    return if (item is RsEnumVariant) listOf(Constructor.Variant(pat, item))
+    else listOf(Constructor.Single(pat))
 }
 
 
