@@ -2,8 +2,13 @@ package org.rust.ide.inspections
 
 import com.intellij.codeInspection.ProblemsHolder
 import org.rust.lang.core.psi.*
+import org.rust.lang.core.psi.ext.RsElement
 import org.rust.lang.core.psi.ext.RsFieldsOwner
+import org.rust.lang.core.psi.ext.namedFields
+import org.rust.lang.core.psi.ext.parentEnum
 import org.rust.lang.core.types.ty.Ty
+import org.rust.lang.core.types.ty.TyAdt
+import org.rust.lang.core.types.ty.TyUnknown
 import org.rust.lang.core.types.type
 
 class RsMatchCheckInspection : RsLocalInspectionTool() {
@@ -12,11 +17,14 @@ class RsMatchCheckInspection : RsLocalInspectionTool() {
     override fun buildVisitor(holder: ProblemsHolder, isOnTheFly: Boolean) = object : RsVisitor() {
         override fun visitMatchExpr(o: RsMatchExpr) {
             val ty = o.expr?.type ?: return
-//            println(((RsPsiFactory(holder.project).createExpression("if let _ = 3") as RsIfExpr).condition?.pat as RsPatWild))
             val arms = o.matchBody?.matchArmList?.map {
+                it.patList.forEach { pat ->
+                    println(pat.kind)
+                }
+                println()
                 it.patList to it.matchArmGuard
             } ?: emptyList()
-            checkArms(arms, holder)
+//            checkArms(arms, holder)
         }
     }
 }
@@ -138,6 +146,8 @@ sealed class Constructor {
     data class Slice(val pat: RsPat) : Constructor()
 }
 
+typealias FieldPattern = Pair<Int, Pattern>
+
 data class Pattern(val ty: Ty, val kind: PatternKind)
 sealed class PatternKind {
     object Wild : PatternKind()
@@ -151,7 +161,7 @@ sealed class PatternKind {
         ty: Ty<'tcx>,
         subpattern: Option<Pattern<'tcx>>,
     }*/
-    data class Binding(val ty: Ty, val subpattern: Pattern?) : PatternKind()
+    data class Binding(val ty: Ty) : PatternKind()
 
 
     /// Foo(...) or Foo{...} or Foo, where `Foo` is a variant name from an adt with >1 variants
@@ -161,13 +171,13 @@ sealed class PatternKind {
         variant_index: usize,
         subpatterns: Vec<FieldPattern<'tcx>>,
     }*/
-    data class Variant(val variantIndex: Int, val subpatterns: List<Pattern>) : PatternKind()
+    data class Variant(val ty: TyAdt, val variantIndex: Int, val subpatterns: List<FieldPattern>) : PatternKind()
 
     /// (...), Foo(...), Foo{...}, or Foo, where `Foo` is a variant name from an adt with 1 variant
     /*Leaf {
         subpatterns: Vec<FieldPattern<'tcx>>,
     }*/
-    data class Leaf(val subpatterns: List<Pattern>) : PatternKind()
+    data class Leaf(val subpatterns: List<FieldPattern>) : PatternKind()
 
     /// box P, &P, &mut P, etc
     /*Deref {
@@ -178,7 +188,7 @@ sealed class PatternKind {
     /*Constant {
         value: &'tcx ty::Const<'tcx>,
     }*/
-    data class Constant(val value: RsConstant) : PatternKind()
+    data class Constant(val value: RsExpr) : PatternKind()
 
     /*Range {
         lo: &'tcx ty::Const<'tcx>,
@@ -206,6 +216,110 @@ sealed class PatternKind {
     data class Array(val prefix: List<Pattern>, val slice: Pattern?, val suffix: List<Pattern>) : PatternKind()
 }
 
+fun lowerPattern(pat: RsPat): Pattern {
+    println("<top>.lowerPattern(pat = $pat)")
+    return Pattern(TyUnknown, pat.kind)
+    return when (pat) {
+        is RsPatStruct -> TODO()
+        is RsPatTupleStruct -> TODO()
+        is RsPatRef -> TODO()
+        is RsPatUniq -> TODO()
+        is RsPatConst -> TODO()
+        is RsPatRange -> TODO()
+        is RsPatTup -> TODO()
+        is RsPatIdent, is RsPatWild -> TODO()
+        is RsPatMacro -> TODO()
+        is RsPatSlice -> TODO()
+        else -> TODO()
+    }
+}
+
+val RsPat.kind: PatternKind
+    get() {
+        println("RsPat.kind")
+        return when (this) {
+            is RsPatIdent -> {
+
+                PatternKind.Binding(this.patBinding.type)
+            }
+            is RsPatWild -> {
+                PatternKind.Wild
+            }
+            is RsPatTup -> {
+                PatternKind.Leaf(this.patList.mapIndexed { i, pat ->
+                    i to lowerPattern(pat)
+                })
+            }
+            is RsPatStruct -> {
+                println("\tRsPatStruct")
+                val item = path.reference.resolve() ?: error("Can't resolve ${path.text}")
+                val subpatterns: List<FieldPattern> = patFieldList.map { patField ->
+                    val pat = patField.pat
+                    val binding = patField.patBinding
+                    val pattern = if (pat != null) {
+                        lowerPattern(pat)
+                    } else {
+                        binding?.type?.let { ty ->
+                            Pattern(ty, PatternKind.Binding(ty))
+                        } ?: error("Binding type = null")
+                    }
+                    getFieldIndex(item as RsFieldsOwner, patField) to pattern
+                }
+
+                getLeafOrVariant(item, subpatterns)
+            }
+            is RsPatTupleStruct -> {
+                println("\tRsPatTupleStruct")
+                val item = path.reference.resolve() ?: error("Can't resolve ${path.text}")
+                val subpatterns: List<FieldPattern> = patList.mapIndexed { i, pat ->
+                    i to lowerPattern(pat) // TODO patIdent ok?
+                }
+
+                getLeafOrVariant(item, subpatterns)
+            }
+            is RsPatConst -> {
+                PatternKind.Constant(expr)
+            }
+
+            is RsPatRef -> TODO()
+            is RsPatUniq -> TODO()
+            is RsPatRange -> TODO()
+            is RsPatMacro -> TODO()
+            is RsPatSlice -> TODO()
+            else -> TODO()
+        }
+
+    }
+
+fun getLeafOrVariant(item: RsElement, subpatterns: List<FieldPattern>): PatternKind {
+    return when (item) {
+        is RsEnumVariant -> {
+            PatternKind.Variant(TyAdt.valueOf(item.parentEnum), getVariantIndex(item), subpatterns)
+        }
+        is RsStructItem -> {
+            PatternKind.Leaf(subpatterns)
+        }
+        else -> error("Impossible case $item")
+    }
+}
+
+
+fun getFieldIndex(fieldsOwner: RsFieldsOwner, pat: RsPatField): Int {
+    val identifier = pat.identifier
+    return fieldsOwner.namedFields.map { it.identifier }.indexOfFirst {
+        it.text == identifier?.text
+    }
+}
+
+fun getVariantIndex(variant: RsEnumVariant): Int {
+    val enum = variant.parentEnum
+    return enum.enumBody?.enumVariantList?.indexOf(variant) ?: -1
+}
+
+val RsPath.isEnumVariant: Boolean
+    get() = (this.reference.resolve() as? RsEnumVariant) != null
+val RsPath.isStructure: Boolean
+    get() = (this.reference.resolve() as? RsStructItem) != null
 
 val Constructor.size: Int
     get() {
