@@ -2,12 +2,10 @@ package org.rust.ide.inspections
 
 import com.intellij.codeInspection.ProblemsHolder
 import org.rust.lang.core.psi.*
-import org.rust.lang.core.psi.ext.RsElement
-import org.rust.lang.core.psi.ext.RsFieldsOwner
-import org.rust.lang.core.psi.ext.namedFields
-import org.rust.lang.core.psi.ext.parentEnum
+import org.rust.lang.core.psi.ext.*
 import org.rust.lang.core.types.ty.Ty
 import org.rust.lang.core.types.ty.TyAdt
+import org.rust.lang.core.types.ty.TyTuple
 import org.rust.lang.core.types.ty.TyUnknown
 import org.rust.lang.core.types.type
 
@@ -16,21 +14,20 @@ class RsMatchCheckInspection : RsLocalInspectionTool() {
 
     override fun buildVisitor(holder: ProblemsHolder, isOnTheFly: Boolean) = object : RsVisitor() {
         override fun visitMatchExpr(o: RsMatchExpr) {
-            val ty = o.expr?.type ?: return
-            val arms = o.matchBody?.matchArmList?.map {
-                it.patList.forEach { pat ->
-                    println(pat.kind)
-                }
-                println()
-                it.patList to it.matchArmGuard
+            o.expr?.type ?: return
+            val matrix = o.matchBody?.matchArmList?.map { arm ->
+                arm.patList.map { lowerPattern(it) } to arm.matchArmGuard
             } ?: emptyList()
-//            checkArms(arms, holder)
+            matrix.forEach {
+                println(it)
+            }
         }
+
     }
 }
 
 
-fun checkArms(arms: List<Pair<List<RsPat>, RsMatchArmGuard?>>, holder: ProblemsHolder) {
+/*fun checkArms(arms: List<Pair<List<RsPat>, RsMatchArmGuard?>>, holder: ProblemsHolder) {
     println("<top>.checkArms(arms = $arms, holder = $holder)")
     val seen = mutableListOf<List<RsPat>>()
     var catchAll = false
@@ -38,11 +35,10 @@ fun checkArms(arms: List<Pair<List<RsPat>, RsMatchArmGuard?>>, holder: ProblemsH
         println("${pair.first} isUseful = ${isUseful(seen, pair.first)}")
         seen.add(pair.first)
     }
-}
-
+}*/
 
 // Use algorithm from 3.1 http://moscova.inria.fr/~maranget/papers/warn/warn004.html
-fun isUseful(matrix: List<List<RsPat>>, v: List<RsPat>): Boolean {
+/*fun isUseful(matrix: List<List<RsPat>>, v: List<RsPat>): Boolean {
     println("<top>.isUseful(matrix = $matrix, v = $v)")
     val matrix = matrix
 
@@ -75,7 +71,7 @@ fun isUseful(matrix: List<List<RsPat>>, v: List<RsPat>): Boolean {
 
 
     return true
-}
+}*/
 
 fun specializeMatrix(constr: Constructor, matrix: List<List<RsPat>>): List<List<RsPat>> {
     println("<top>.specializeMatrix(constr = $constr, matrix = $matrix)")
@@ -87,40 +83,36 @@ fun specializeMatrix(constr: Constructor, matrix: List<List<RsPat>>): List<List<
     return newMatrix
 }
 
-fun specializeRow(constructor: Constructor, row: List<RsPat>): List<List<RsPat>> {
+fun specializeRow(constructor: Constructor, row: List<Pattern>): List<List<RsPat>> {
     println("<top>.specializeRow(constructor = $constructor, row = $row)")
-    val rowConstructors = row[0].constructors
-    val result: MutableList<List<RsPat>> = mutableListOf()
 
     val pat = row[0]
-    when (pat) {
-        is RsPatIdent, is RsPatWild -> {
-            val prefix = mutableListOf<RsPat>()
-            (1..constructor.size).forEach {
-                prefix.add(pat)
+    val kind = pat.kind
+    val head: List<Pattern> = when (kind) {
+        is PatternKind.Leaf -> TODO()
+        is PatternKind.Binding -> TODO()
+        is PatternKind.Variant -> TODO()
+        is PatternKind.Deref -> TODO()
+        is PatternKind.Constant -> TODO()
+        is PatternKind.Range -> TODO()
+        is PatternKind.Slice -> TODO()
+        is PatternKind.Array -> TODO()
+        PatternKind.Wild -> {
+            val result = mutableListOf<Pattern>()
+            repeat(constructor.size) {
+                result.add(Pattern(TyUnknown, PatternKind.Wild))
             }
-            result.add(prefix.plus(row.subList(1, row.size)))
-            println("\tWild: $row to $result")
+            result
         }
-        is RsPatStruct -> {
-            val prefix = mutableListOf<RsPat>()
-            if (pat.path.singleOrVariant(pat) == constructor) {
-                TODO("ДОДЕЛАТЬ")
-            }
-        }
-        is RsPatTupleStruct -> TODO()
-        is RsPatRef -> TODO()
-        is RsPatUniq -> TODO()
-        is RsPatConst -> TODO()
-        is RsPatRange -> TODO()
-        is RsPatTup -> TODO()
-        is RsPatMacro -> TODO()
-        is RsPatSlice -> TODO()
-        else -> TODO()
     }
 
     return emptyList()
 }
+
+val Pattern.constructors: List<Constructor>
+    get() {
+        return listOf(Constructor.Single())
+    }
 
 sealed class Constructor {
 
@@ -216,22 +208,53 @@ sealed class PatternKind {
     data class Array(val prefix: List<Pattern>, val slice: Pattern?, val suffix: List<Pattern>) : PatternKind()
 }
 
-fun lowerPattern(pat: RsPat): Pattern {
-    println("<top>.lowerPattern(pat = $pat)")
-    return Pattern(TyUnknown, pat.kind)
-    return when (pat) {
-        is RsPatStruct -> TODO()
-        is RsPatTupleStruct -> TODO()
+val RsPat.type: Ty
+    get() = when (this) {
+        is RsPatConst -> {
+            expr.type
+        }
+        is RsPatStruct, is RsPatTupleStruct -> {
+            val path = when (this) {
+                is RsPatTupleStruct -> path
+                is RsPatStruct -> path
+                else -> null
+            }
+            val tmp = path?.reference?.resolve()
+            when {
+                tmp is RsEnumVariant -> {
+                    TyAdt.valueOf(tmp.parentEnum)
+                }
+                tmp is RsStructOrEnumItemElement -> {
+                    TyAdt.valueOf(tmp)
+                }
+                else -> {
+                    TyUnknown
+                }
+            }
+        }
+        is RsPatWild -> {
+            TyUnknown
+        }
+        is RsPatIdent -> {
+            patBinding.type
+        }
+        is RsPatTup -> {
+            TyTuple(patList.map { it.type })
+        }
         is RsPatRef -> TODO()
         is RsPatUniq -> TODO()
-        is RsPatConst -> TODO()
         is RsPatRange -> TODO()
-        is RsPatTup -> TODO()
-        is RsPatIdent, is RsPatWild -> TODO()
         is RsPatMacro -> TODO()
         is RsPatSlice -> TODO()
         else -> TODO()
     }
+
+
+fun lowerPattern(pat: RsPat): Pattern {
+    println("<top>.lowerPattern(pat = $pat)")
+    val kind = pat.kind
+    val ty = pat.type
+    return Pattern(ty, kind)
 }
 
 val RsPat.kind: PatternKind
@@ -294,7 +317,7 @@ val RsPat.kind: PatternKind
 fun getLeafOrVariant(item: RsElement, subpatterns: List<FieldPattern>): PatternKind {
     return when (item) {
         is RsEnumVariant -> {
-            PatternKind.Variant(TyAdt.valueOf(item.parentEnum), getVariantIndex(item), subpatterns)
+            PatternKind.Variant(TyAdt.valueOf(item.parentEnum), item.index, subpatterns)
         }
         is RsStructItem -> {
             PatternKind.Leaf(subpatterns)
@@ -311,10 +334,9 @@ fun getFieldIndex(fieldsOwner: RsFieldsOwner, pat: RsPatField): Int {
     }
 }
 
-fun getVariantIndex(variant: RsEnumVariant): Int {
-    val enum = variant.parentEnum
-    return enum.enumBody?.enumVariantList?.indexOf(variant) ?: -1
-}
+val RsEnumVariant.index: Int
+    get() = parentEnum.enumBody?.enumVariantList?.indexOf(this) ?: -1
+
 
 val RsPath.isEnumVariant: Boolean
     get() = (this.reference.resolve() as? RsEnumVariant) != null
