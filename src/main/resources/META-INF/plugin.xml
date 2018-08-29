@@ -129,7 +129,6 @@
         <codeInsight.parameterInfo language="Rust" implementationClass="org.rust.ide.hints.RsParameterInfoHandler"/>
         <codeInsight.parameterNameHints language="Rust"
                                         implementationClass="org.rust.ide.hints.RsInlayParameterHintsProvider"/>
-
         <!-- Annotator -->
 
         <annotator language="Rust" implementationClass="org.rust.ide.annotator.RsHighlightingAnnotator"/>
@@ -153,7 +152,6 @@
                                         implementationClass="org.rust.ide.lineMarkers.RsCrateDocLineMarkerProvider"/>
         <codeInsight.lineMarkerProvider language="Rust"
                                         implementationClass="org.rust.ide.lineMarkers.RsMethodLineSeparatorProvider"/>
-
         <runLineMarkerContributor language="Rust"
                                   implementationClass="org.rust.ide.lineMarkers.CargoExecutableRunLineMarkerContributor"/>
         <runLineMarkerContributor language="Rust"
@@ -164,7 +162,6 @@
         <renamePsiElementProcessor implementation="org.rust.lang.refactoring.RsRenameProcessor"/>
 
         <!-- Implement methods -->
-
         <codeInsight.implementMethod language="Rust"
                                      implementationClass="org.rust.lang.refactoring.implementMembers.ImplementMembersHandler"/>
 
@@ -470,7 +467,6 @@
 
         <liveTemplateMacro implementation="org.rust.ide.template.macros.RsSuggestIndexNameMacro"/>
         <liveTemplateMacro implementation="org.rust.ide.template.macros.RsCollectionElementNameMacro"/>
-
         <!-- Intentions -->
 
         <intentionAction>
@@ -630,7 +626,6 @@
         <!-- Postfix templates -->
         <codeInsight.template.postfixTemplateProvider language="Rust"
                                                       implementationClass="org.rust.ide.template.postfix.RsPostfixTemplateProvider"/>
-
         <!-- Highlight Visitor -->
 
         <highlightVisitor implementation="org.rust.ide.highlight.RsRainbowVisitor"/>
@@ -731,7 +726,11 @@
                 text="Detach Cargo project"
                 icon="AllIcons.ToolbarDecorator.Remove"
                 use-shortcut-of="$Delete"/>
-
+        <action class="org.rust.lang.refactoring.generateConstructor.GenerateConstructorAction"
+                id="Rust.GenerateConstructor"
+                text="Generate Constructor">
+            <add-to-group group-id="GenerateGroup"/>
+        </action>
         <group id="Rust.Cargo">
             <reference id="Rust.RefreshCargoProject"/>
             <reference id="Rust.CargoCommand"/>
