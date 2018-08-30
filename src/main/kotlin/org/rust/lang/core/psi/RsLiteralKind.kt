@@ -35,6 +35,17 @@ sealed class RsLiteralKind(val node: ASTNode) {
         override val validSuffixes: List<kotlin.String>
             get() = listOf("u8", "i8", "u16", "i16", "u32", "i32", "u64", "i64", "u128", "i128", "isize", "usize")
 
+        val value: Int?
+            get() = offsets.value?.substring(node.text)
+                ?.filter { it != '_' }
+                ?.let {
+                    try {
+                        it.toInt()
+                    } catch (e: NumberFormatException) {
+                        null
+                    }
+                }
+
         override val offsets: LiteralOffsets by lazy { offsetsForNumber(node) }
     }
 

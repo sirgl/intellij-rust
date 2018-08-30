@@ -21,6 +21,7 @@ class RsMatchCheckInspection : RsLocalInspectionTool() {
             matrix.forEach {
                 println(it)
             }
+            specializeRow(matrix[1].first[0].constructors.first(), matrix[0].first)
         }
 
     }
@@ -73,31 +74,61 @@ class RsMatchCheckInspection : RsLocalInspectionTool() {
     return true
 }*/
 
-fun specializeMatrix(constr: Constructor, matrix: List<List<RsPat>>): List<List<RsPat>> {
-    println("<top>.specializeMatrix(constr = $constr, matrix = $matrix)")
-    val newMatrix = mutableListOf<List<RsPat>>()
-    for (row in matrix) {
-        specializeRow(constr, row).forEach { newMatrix.add(it) }
-//        TODO("Get specialized row and add in new matrix")
-    }
-    return newMatrix
-}
+//fun specializeMatrix(constr: Constructor, matrix: List<List<RsPat>>): List<List<RsPat>?> {
+//    println("<top>.specializeMatrix(constr = $constr, matrix = $matrix)")
+//    val newMatrix = mutableListOf<List<RsPat>>()
+//    for (row in matrix) {
+//        specializeRow(constr, row).forEach { newMatrix.add(it) }
+////        TODO("Get specialized row and add in new matrix")
+//    }
+//    return newMatrix
+//}
 
 fun specializeRow(constructor: Constructor, row: List<Pattern>): List<List<RsPat>> {
     println("<top>.specializeRow(constructor = $constructor, row = $row)")
 
     val pat = row[0]
     val kind = pat.kind
-    val head: List<Pattern> = when (kind) {
-        is PatternKind.Leaf -> TODO()
-        is PatternKind.Binding -> TODO()
-        is PatternKind.Variant -> TODO()
-        is PatternKind.Deref -> TODO()
-        is PatternKind.Constant -> TODO()
+    val head: List<Pattern>? = when (kind) {
+        is PatternKind.Variant -> {
+            if (constructor == pat.constructors.first()) {
+                patternsForVariant(kind.subpatterns, constructor.size)
+            } else {
+                emptyList()
+            }
+        }
+        is PatternKind.Leaf -> {
+            /**
+             * Вот здесь непонятно. В соотвествии с алгоритом необходимо проверить равенство конструкторов
+             * (как в случае с вариантом). Но в компиляторе они так не делают. Очень странно. И непонятно.
+             */
+            patternsForVariant(kind.subpatterns, constructor.size)
+        }
+        is PatternKind.Deref -> listOf(kind.subpattern)
+        is PatternKind.Constant -> {
+            when (constructor) {
+                is Constructor.Slice -> TODO()
+                else -> {
+                    when (constructor) {
+                        is Constructor.Single -> TODO()
+                        is Constructor.Variant -> TODO()
+                        is Constructor.ConstantValue -> {
+                            if (compareConstValue(constructor.expr, kind.value) == 0) {
+                                emptyList<Pattern>()
+                            } else {
+                                null
+                            }
+                        }
+                        is Constructor.ConstantRange -> TODO()
+                        is Constructor.Slice -> TODO()
+                    }
+                }
+            }
+        }
         is PatternKind.Range -> TODO()
         is PatternKind.Slice -> TODO()
         is PatternKind.Array -> TODO()
-        PatternKind.Wild -> {
+        PatternKind.Wild, is PatternKind.Binding -> {
             val result = mutableListOf<Pattern>()
             repeat(constructor.size) {
                 result.add(Pattern(TyUnknown, PatternKind.Wild))
@@ -109,33 +140,121 @@ fun specializeRow(constructor: Constructor, row: List<Pattern>): List<List<RsPat
     return emptyList()
 }
 
-val Pattern.constructors: List<Constructor>
-    get() {
-        return listOf(Constructor.Single())
+fun compareLiteral(a: RsLitExpr, b: RsLitExpr): Int? {
+    val aKind = a.kind ?: return null
+    val bKind = b.kind ?: return null
+    return when {
+        aKind is RsLiteralKind.Boolean && bKind is RsLiteralKind.Boolean -> {
+            when {
+                aKind.value == bKind.value -> 0
+                aKind.value && !bKind.value -> 1
+                !aKind.value && bKind.value -> -1
+                else -> null
+            }
+        }
+        aKind is RsLiteralKind.Integer && bKind is RsLiteralKind.Integer -> {
+            val aV = aKind.value
+            val bV = bKind.value
+            if (aV == null || bV == null) null
+            else aV.compareTo(bV)
+        }
+        aKind is RsLiteralKind.Float && bKind is RsLiteralKind.Float -> {
+            val aV = aKind.value
+            val bV = bKind.value
+            if (aV == null || bV == null) null
+            else aV.compareTo(bV)
+        }
+        aKind is RsLiteralKind.String && bKind is RsLiteralKind.String -> {
+            val aV = aKind.value
+            val bV = bKind.value
+            if (aV == null || bV == null) null
+            else aV.compareTo(bV)
+        }
+        aKind is RsLiteralKind.Char && bKind is RsLiteralKind.Char -> {
+            val aV = aKind.value
+            val bV = bKind.value
+            if (aV == null || bV == null) null
+            else aV.compareTo(bV)
+        }
+        else -> null
+    }
+}
+
+fun compareConstValue(a: RsExpr, b: RsExpr): Int? {
+    return when {
+        a is RsLitExpr && b is RsLitExpr -> compareLiteral(a, b)
+        a is RsPathExpr && b is RsPathExpr -> {
+            val aR = a.path.reference.resolve()
+            val bR = b.path.reference.resolve()
+            if (aR?.equals(bR) == true) 1
+            else null
+        }
+        a is RsUnaryExpr && b is RsUnaryExpr -> TODO()
+        else -> null
     }
 
-sealed class Constructor {
+}
+
+fun construcorCoveredByRange(constructor: Constructor, from: RsConstant, to: RsConstant): Boolean {
+    when (constructor) {
+        is Constructor.ConstantValue -> TODO()
+        is Constructor.Single -> TODO()
+        is Constructor.Variant -> TODO()
+        is Constructor.ConstantRange -> TODO()
+        is Constructor.Slice -> TODO()
+    }
+}
+
+fun patternsForVariant(subpatterns: List<FieldPattern>, size: Int): List<Pattern> {
+    val result = mutableListOf<Pattern>()
+    repeat(size) {
+        result.add(Pattern(TyUnknown, PatternKind.Wild))
+    }
+    for (subpattern in subpatterns) {
+        result[subpattern.first] = subpattern.second
+    }
+    return result
+}
+
+val Pattern.constructors: List<Constructor>
+    get() {
+        return when (kind) {
+            PatternKind.Wild, is PatternKind.Binding -> emptyList()
+            is PatternKind.Variant -> {
+                val enum = (ty as TyAdt).item as RsEnumItem
+                val variant = enum.enumBody?.enumVariantList?.get(kind.variantIndex) ?: return emptyList()
+                listOf(Constructor.Variant(variant, ty))
+            }
+            is PatternKind.Leaf, is PatternKind.Deref -> listOf(Constructor.Single(ty))
+            is PatternKind.Constant -> listOf(Constructor.ConstantValue(kind.value, ty))
+            is PatternKind.Range -> TODO()
+            is PatternKind.Slice -> TODO()
+            is PatternKind.Array -> TODO()
+        }
+    }
+
+sealed class Constructor(open val ty: Ty) {
 
     /// The constructor of all patterns that don't vary by constructor,
     /// e.g. struct patterns and fixed-length arrays.
     //Single
-    data class Single(val pat: RsPat) : Constructor()
+    data class Single(override val ty: Ty) : Constructor(ty)
 
     /// Enum variants.
     // Variant(DefId)
-    data class Variant(val pat: RsPat, val variant: RsEnumVariant) : Constructor()
+    data class Variant(val variant: RsEnumVariant, override val ty: TyAdt) : Constructor(ty)
 
     /// Literal values.
     //ConstantValue(&'tcx ty::Const<'tcx>),
-    data class ConstantValue(val pat: RsPat, val expr: RsExpr) : Constructor()
+    data class ConstantValue(val expr: RsExpr, override val ty: Ty) : Constructor(ty)
 
     /// Ranges of literal values (`2...5` and `2..5`).
     //ConstantRange(&'tcx ty::Const<'tcx>, &'tcx ty::Const<'tcx>, RangeEnd),
-    data class ConstantRange(val pat: RsPat, val start: RsPatConst, val end: RsPatConst, val includeEnd: Boolean = false) : Constructor()
+    data class ConstantRange(val start: RsPatConst, val end: RsPatConst, val includeEnd: Boolean = false, override val ty: Ty) : Constructor(ty)
 
     /// Array patterns of length n.
     //Slice(u64),
-    data class Slice(val pat: RsPat) : Constructor()
+    data class Slice(val size: Int, override val ty: Ty) : Constructor(ty)
 }
 
 typealias FieldPattern = Pair<Int, Pattern>
@@ -249,7 +368,6 @@ val RsPat.type: Ty
         else -> TODO()
     }
 
-
 fun lowerPattern(pat: RsPat): Pattern {
     println("<top>.lowerPattern(pat = $pat)")
     val kind = pat.kind
@@ -286,7 +404,7 @@ val RsPat.kind: PatternKind
                             Pattern(ty, PatternKind.Binding(ty))
                         } ?: error("Binding type = null")
                     }
-                    getFieldIndex(item as RsFieldsOwner, patField) to pattern
+                    (item as RsFieldsOwner).indexOf(patField) to pattern
                 }
 
                 getLeafOrVariant(item, subpatterns)
@@ -326,10 +444,9 @@ fun getLeafOrVariant(item: RsElement, subpatterns: List<FieldPattern>): PatternK
     }
 }
 
-
-fun getFieldIndex(fieldsOwner: RsFieldsOwner, pat: RsPatField): Int {
+fun RsFieldsOwner.indexOf(pat: RsPatField): Int {
     val identifier = pat.identifier
-    return fieldsOwner.namedFields.map { it.identifier }.indexOfFirst {
+    return namedFields.map { it.identifier }.indexOfFirst {
         it.text == identifier?.text
     }
 }
@@ -337,56 +454,37 @@ fun getFieldIndex(fieldsOwner: RsFieldsOwner, pat: RsPatField): Int {
 val RsEnumVariant.index: Int
     get() = parentEnum.enumBody?.enumVariantList?.indexOf(this) ?: -1
 
-
-val RsPath.isEnumVariant: Boolean
-    get() = (this.reference.resolve() as? RsEnumVariant) != null
-val RsPath.isStructure: Boolean
-    get() = (this.reference.resolve() as? RsStructItem) != null
-
 val Constructor.size: Int
     get() {
         return when (this) {
             is Constructor.Single -> {
-                when (this.pat) {
-                    is RsPatStruct -> (this.pat.path.reference.resolve() as RsFieldsOwner).size
-                    is RsPatTupleStruct -> (this.pat.path.reference.resolve() as RsFieldsOwner).size
-                    else -> TODO("Check for another case")
-                }
+                ty.subTys().size
             }
             is Constructor.Variant -> {
                 this.variant.size
             }
-            is Constructor.ConstantValue -> 1
+            is Constructor.ConstantValue -> ty.subTys().size
             is Constructor.ConstantRange -> TODO()
             is Constructor.Slice -> TODO()
         }
     }
 
-val RsFieldsOwner.size: Int
-    get() = tupleFields?.tupleFieldDeclList?.size ?: blockFields?.fieldDeclList?.size ?: 0
-
-val RsPat.constructors: List<Constructor>
-    get() {
-        return when (this) {
-            is RsPatStruct -> path.singleOrVariant(this)
-            is RsPatTupleStruct -> path.singleOrVariant(this)
-            is RsPatRef -> listOf(Constructor.Single(this))
-            is RsPatUniq -> listOf(Constructor.Single(this)) // Не понимаю что это за шаблоны такие. Кажется `box a`
-            is RsPatConst -> listOf(Constructor.ConstantValue(this, this.expr)) // Надо бы достать значение. Ну только если нужно
-            is RsPatRange -> listOf(Constructor.ConstantRange(this, patConstList[0], patConstList[1], dotdotdot == null)) // TODO ..=
-            is RsPatTup -> listOf(Constructor.Single(this)) // Вместе со структурой и енумом?
-            is RsPatIdent, is RsPatWild -> emptyList()
-            is RsPatMacro -> TODO()
-            is RsPatSlice -> TODO()
-            else -> emptyList()
+fun Ty.subTys(): List<Ty> {
+    return when (this) {
+        is TyTuple -> {
+            this.types
+        }
+        is TyAdt -> {
+            this.typeArguments
+        }
+        else -> {
+            emptyList()
         }
     }
-
-fun RsPath.singleOrVariant(pat: RsPat): List<Constructor> {
-    val item = reference.resolve()
-    return if (item is RsEnumVariant) listOf(Constructor.Variant(pat, item))
-    else listOf(Constructor.Single(pat))
 }
+
+val RsFieldsOwner.size: Int
+    get() = tupleFields?.tupleFieldDeclList?.size ?: blockFields?.fieldDeclList?.size ?: 0
 
 
 val List<List<*>>.width: Int

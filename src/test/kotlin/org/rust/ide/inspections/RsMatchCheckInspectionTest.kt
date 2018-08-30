@@ -8,7 +8,8 @@ class RsMatchCheckInspectionTest : RsInspectionsTestBase(RsMatchCheckInspection(
         }
 
         enum THREE {
-            END
+            END,
+            START
         }
 
         enum ONE {
@@ -29,10 +30,16 @@ class RsMatchCheckInspectionTest : RsInspectionsTestBase(RsMatchCheckInspection(
                 b: 2
             };
             let b = 2;
-            match a {
-                ONE::A{b: x, a: 2} => {},
-                ONE::B(TWO::A, _, x) => {},
+            let c = THREE::END;
+            match c {
+                THREE::END => {}
+                THREE::END => {}
             }
+//            match a {
+//                ONE::A{b: x, a: 2} => {},
+//                ONE::A{a: x, b: 2} => {},
+//                ONE::B(TWO::A, _, x) => {},
+//            }
         }
 
 
