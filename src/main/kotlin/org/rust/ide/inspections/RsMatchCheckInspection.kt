@@ -1,5 +1,6 @@
 package org.rust.ide.inspections
 
+import com.intellij.codeInspection.ProblemHighlightType
 import com.intellij.codeInspection.ProblemsHolder
 import org.rust.lang.core.psi.*
 import org.rust.lang.core.psi.ext.*
@@ -11,25 +12,25 @@ class RsMatchCheckInspection : RsLocalInspectionTool() {
 
     override fun buildVisitor(holder: ProblemsHolder, isOnTheFly: Boolean) = object : RsVisitor() {
         override fun visitMatchExpr(o: RsMatchExpr) {
+            println("**************************************** NEW ****************************************")
             val matrix = o.matchBody?.matchArmList?.map { arm ->
                 arm.patList.map { lowerPattern(it) } to arm.matchArmGuard
             } ?: emptyList()
             matrix.forEach {
                 println(it)
             }
-            /*for ((i, row) in matrix.withIndex()) {
-                if(i > 0) {
-                    val tmp = matrix.subList(0, i).map {
-                        specializeRow(row.first.first().constructors?.first(), it.first)
-                    }
-                    tmp.forEach {
-                        if(it != null) {
-                            val ref = o.matchBody?.matchArmList?.get(i) ?: error("Can't get reference")
-                            holder.registerProblem(ref, "heh", ProblemHighlightType.LIKE_UNUSED_SYMBOL)
-                        }
+            println()
+            for ((i, row) in matrix.withIndex()) {
+                if (i > 0) {
+                    val useful = isUseful(matrix.subList(0, i).map { it.first }, row.first)
+                    println("match arm ${row.first} isUseful=$useful")
+                    println()
+                    if (!useful) {
+                        val matchArm = o.matchBody?.matchArmList?.get(i) ?: continue
+                        holder.registerProblem(matchArm, "Useless match arm", ProblemHighlightType.GENERIC_ERROR)
                     }
                 }
-            }*/
+            }
         }
 
     }
@@ -92,16 +93,43 @@ fun isUseful(matrix: List<List<Pattern>?>, v: List<Pattern>): Boolean {
             .find { it != TyUnknown } ?: v[0].ty
 
         val allConstructors = allConstructors(ty)
+        println("<top>.isUseful allConstructors $allConstructors")
 
-        false
+        val missingConstructor = allConstructors.filter { !usedConstructors.contains(it) }
+
+
+        val isPrivatelyEmpty = allConstructors.isEmpty()
+        val isDeclaredNonexhaustive = (ty as? TyAdt)?.isNonExhaustiveEnum ?: false
+        println("<top>.isUseful missing constructors $missingConstructor\tis privately empty $isPrivatelyEmpty, is declared nonexhaustive $isDeclaredNonexhaustive")
+
+        val isNonExhaustive = isPrivatelyEmpty || isDeclaredNonexhaustive
+
+        return if (missingConstructor.isEmpty() && !isNonExhaustive) {
+            allConstructors.map {
+                isUsefulS(matrix, v, it)
+            }.find {
+                it
+            } ?: false
+        } else {
+            val newMatrix = matrix.map {
+                if (it?.get(0)?.kind is PatternKind.Wild) {
+                    it.subList(1, it.size)
+                } else {
+                    null
+                }
+            }.mapNotNull { it }
+            isUseful(newMatrix, v.subList(1, v.size))
+        }
     }
 }
 
 fun isUsefulS(matrix: List<List<Pattern>?>, v: List<Pattern>, constructor: Constructor): Boolean {
 //    val subTys = constructor.ty.subTys()
 //    val wildPattern = subTys.map { Pattern(it, PatternKind.Wild) }
+    println("<top>.isUsefulS(matrix = $matrix, v = $v, constructor = $constructor)")
 
-    val newMatrix = matrix.map { specializeRow(it, constructor) }
+    val newMatrix = matrix.map { specializeRow(it, constructor) }.mapNotNull { it }
+    println("<top>.isUsefulS newMatrix=$newMatrix")
 
     val newV = specializeRow(v, constructor)
     return when (newV) {
@@ -111,7 +139,7 @@ fun isUsefulS(matrix: List<List<Pattern>?>, v: List<Pattern>, constructor: Const
 }
 
 fun specializeRow(row: List<Pattern>?, constructor: Constructor): List<Pattern>? {
-    println("<top>.specializeRow(constructor = $constructor, row = $row)")
+    println("<top>.specializeRow(row = $row, constructor = $constructor)")
     row ?: return null // FIXME не уверен в надобности
 
     val pat = row[0]
@@ -163,7 +191,7 @@ fun specializeRow(row: List<Pattern>?, constructor: Constructor): List<Pattern>?
             result
         }
     }
-
+    println("<top>.specializeRow head=$head")
     return head?.plus(row.subList(1, row.size))
 }
 
@@ -283,7 +311,9 @@ fun allConstructors(ty: Ty): List<Constructor> {
                 Constructor.ConstantValue(Constant.Boolean(it), ty)
             }
         }
-        ty is TyArray -> TODO()
+        ty is TyArray && ty.size != null -> TODO()
+        ty is TyArray || ty is TySlice -> TODO()
+
         ty is TyAdt && ty.item is RsEnumItem -> {
             ty.item.enumBody?.enumVariantList?.map { Constructor.Variant(it, ty) } ?: emptyList()
         }
@@ -298,6 +328,7 @@ fun lowerPattern(pat: RsPat): Pattern {
     println("<top>.lowerPattern(pat = $pat)")
     val kind = pat.kind
     val ty = pat.type
+    println("<top>.lowerPattern ty=$ty, kind=$kind")
     return Pattern(ty, kind)
 }
 
@@ -376,7 +407,25 @@ fun Ty.subTys(): List<Ty> {
     }
 }
 
+/*fun isUninhabited(ty: Ty): Boolean {
+    if(EXHAUSTIVE_PATTERNS.state == FeatureState.ACTIVE) {
+        tre
+    } else {
+        false
+    }
+}*/
+
 // ************************************************** UTILS VAL **************************************************
+val TyAdt.isNonExhaustiveEnum: Boolean
+    get() {
+        val enum = item as? RsEnumItem ?: return false
+        val attrList = enum.outerAttrList
+        val attr = attrList.find {
+            it.metaItem.name == "non_exhaustive"
+        }
+        return attr == null
+    }
+
 val RsExpr.value: Constant
     get() {
         return when (this) {
@@ -476,22 +525,24 @@ val RsPat.type: Ty
 
 val RsPat.kind: PatternKind
     get() {
-        println("RsPat.kind")
+        println("<top>.RsPat.kind()")
         return when (this) {
             is RsPatIdent -> {
-
+                println("<top>.RsPat.kind() RsPatIdent")
                 PatternKind.Binding(this.patBinding.type)
             }
             is RsPatWild -> {
+                println("<top>.RsPat.kind() RsPatWild")
                 PatternKind.Wild
             }
             is RsPatTup -> {
+                println("<top>.RsPat.kind() RsPatTup")
                 PatternKind.Leaf(this.patList.mapIndexed { i, pat ->
                     i to lowerPattern(pat)
                 })
             }
             is RsPatStruct -> {
-                println("\tRsPatStruct")
+                println("<top>.RsPat.kind() RsPatStruct")
                 val item = path.reference.resolve() ?: error("Can't resolve ${path.text}")
                 val subpatterns: List<FieldPattern> = patFieldList.map { patField ->
                     val pat = patField.pat
@@ -509,7 +560,7 @@ val RsPat.kind: PatternKind
                 getLeafOrVariant(item, subpatterns)
             }
             is RsPatTupleStruct -> {
-                println("\tRsPatTupleStruct")
+                println("<top>.RsPat.kind() RsPatTupleStruct")
                 val item = path.reference.resolve() ?: error("Can't resolve ${path.text}")
                 val subpatterns: List<FieldPattern> = patList.mapIndexed { i, pat ->
                     i to lowerPattern(pat) // TODO patIdent ok?
@@ -518,9 +569,21 @@ val RsPat.kind: PatternKind
                 getLeafOrVariant(item, subpatterns)
             }
             is RsPatConst -> {
-                PatternKind.Constant(expr.value)
+                println("<top>.RsPat.kind() RsPatConst")
+                val ty = this.expr.type
+                if (ty is TyAdt) {
+                    println("<top>.RsPat.kind() RsPatConst.expr is TyAdt ")
+                    if (ty.item is RsEnumItem) {
+                        println("<top>.RsPat.kind() RsPatConst.expr it EnumVariant")
+                        val variant = (expr as RsPathExpr).path.reference.resolve() as RsEnumVariant
+                        PatternKind.Variant(ty, (variant as RsEnumVariant).index, emptyList())
+                    } else {
+                        error("Unresolved constant")
+                    }
+                } else {
+                    PatternKind.Constant(expr.value)
+                }
             }
-
             is RsPatRef -> TODO()
             is RsPatUniq -> TODO()
             is RsPatRange -> TODO()
@@ -538,7 +601,7 @@ val RsFieldsOwner.size: Int
     get() = tupleFields?.tupleFieldDeclList?.size ?: blockFields?.fieldDeclList?.size ?: 0
 
 val List<List<*>?>.width: Int
-    get() = maxWith(Comparator.comparing<List<*>, Int> { it.size })?.size ?: 0
+    get() = maxWith(Comparator.comparing<List<*>, Int> { it?.size ?: -1 })?.size ?: 0
 
 val List<List<*>?>.height: Int
     get() = size
