@@ -11,7 +11,6 @@ class RsMatchCheckInspection : RsLocalInspectionTool() {
 
     override fun buildVisitor(holder: ProblemsHolder, isOnTheFly: Boolean) = object : RsVisitor() {
         override fun visitMatchExpr(o: RsMatchExpr) {
-            val type = (o.expr?.type ?: return) as? TyPrimitive ?: return
             val matrix = o.matchBody?.matchArmList?.map { arm ->
                 arm.patList.map { lowerPattern(it) } to arm.matchArmGuard
             } ?: emptyList()
@@ -85,17 +84,22 @@ fun isUseful(matrix: List<List<Pattern>?>, v: List<Pattern>): Boolean {
         }.find { it == true } ?: false
     } else {
         println("<top>.isUseful expanding wildcard")
-        val usedConstrucors = matrix.mapNotNull { it?.get(0) }.mapNotNull { it.constructors?.first() }
-        println("<top>.isUseful used constructors $usedConstrucors")
-        TODO()
+        val usedConstructors = matrix.map { it?.get(0)?.constructors }.flatMap { it ?: emptyList() }
+        println("<top>.isUseful used constructors $usedConstructors")
+
+        val ty = matrix.mapNotNull { it?.get(0) }
+            .map { it.ty }
+            .find { it != TyUnknown } ?: v[0].ty
+
+        val allConstructors = allConstructors(ty)
 
         false
     }
 }
 
 fun isUsefulS(matrix: List<List<Pattern>?>, v: List<Pattern>, constructor: Constructor): Boolean {
-    val subTys = constructor.ty.subTys()
-    val wildPattern = subTys.map { Pattern(it, PatternKind.Wild) }
+//    val subTys = constructor.ty.subTys()
+//    val wildPattern = subTys.map { Pattern(it, PatternKind.Wild) }
 
     val newMatrix = matrix.map { specializeRow(it, constructor) }
 
@@ -136,7 +140,7 @@ fun specializeRow(row: List<Pattern>?, constructor: Constructor): List<Pattern>?
                         is Constructor.Single -> TODO()
                         is Constructor.Variant -> TODO()
                         is Constructor.ConstantValue -> {
-                            if (compareConstValue(constructor.expr, kind.value) == 0) {
+                            if (compareConstValue(constructor.value, kind.value) == 0) {
                                 emptyList<Pattern>()
                             } else {
                                 null
@@ -177,7 +181,7 @@ sealed class Constructor(open val ty: Ty) {
 
     /// Literal values.
     //ConstantValue(&'tcx ty::Const<'tcx>),
-    data class ConstantValue(val expr: RsExpr, override val ty: Ty) : Constructor(ty)
+    data class ConstantValue(val value: Constant, override val ty: Ty) : Constructor(ty)
 
     /// Ranges of literal values (`2...5` and `2..5`).
     //ConstantRange(&'tcx ty::Const<'tcx>, &'tcx ty::Const<'tcx>, RangeEnd),
@@ -231,7 +235,7 @@ sealed class PatternKind {
     /*Constant {
         value: &'tcx ty::Const<'tcx>,
     }*/
-    data class Constant(val value: RsExpr) : PatternKind()
+    data class Constant(val value: org.rust.ide.inspections.Constant) : PatternKind()
 
     /*Range {
         lo: &'tcx ty::Const<'tcx>,
@@ -259,7 +263,37 @@ sealed class PatternKind {
     data class Array(val prefix: List<Pattern>, val slice: Pattern?, val suffix: List<Pattern>) : PatternKind()
 }
 
+sealed class Constant {
+    data class Boolean(val value: kotlin.Boolean) : Constant()
+    data class Integer(val value: Int) : Constant()
+    data class Double(val value: kotlin.Double) : Constant()
+    data class String(val value: kotlin.String) : Constant()
+    data class Char(val value: kotlin.String) : Constant()
+    data class Path(val value: RsPathExpr) : Constant()
+    object Unknown : Constant()
+}
+
 // ************************************************** UTILS FUNC **************************************************
+fun allConstructors(ty: Ty): List<Constructor> {
+    println("<top>.allConstructors(ty = $ty)")
+    // TODO check uninhabited
+    return when {
+        ty is TyBool -> {
+            listOf(true, false).map {
+                Constructor.ConstantValue(Constant.Boolean(it), ty)
+            }
+        }
+        ty is TyArray -> TODO()
+        ty is TyAdt && ty.item is RsEnumItem -> {
+            ty.item.enumBody?.enumVariantList?.map { Constructor.Variant(it, ty) } ?: emptyList()
+        }
+        else -> {
+            listOf(Constructor.Single(ty))
+        }
+
+    }
+}
+
 fun lowerPattern(pat: RsPat): Pattern {
     println("<top>.lowerPattern(pat = $pat)")
     val kind = pat.kind
@@ -290,58 +324,34 @@ fun patternsForVariant(subpatterns: List<FieldPattern>, size: Int): List<Pattern
     return result
 }
 
-fun compareConstValue(a: RsExpr, b: RsExpr): Int? {
-    return when {
-        a is RsLitExpr && b is RsLitExpr -> compareLiteral(a, b)
-        a is RsPathExpr && b is RsPathExpr -> {
-            val aR = a.path.reference.resolve()
-            val bR = b.path.reference.resolve()
-            if (aR?.equals(bR) == true) 0
-            else null
-        }
-        a is RsUnaryExpr && b is RsUnaryExpr -> TODO()
-        else -> null
-    }
-
-}
-
-fun compareLiteral(a: RsLitExpr, b: RsLitExpr): Int? {
-    val aKind = a.kind ?: return null
-    val bKind = b.kind ?: return null
-    return when {
-        aKind is RsLiteralKind.Boolean && bKind is RsLiteralKind.Boolean -> {
-            when {
-                aKind.value == bKind.value -> 0
-                aKind.value && !bKind.value -> 1
-                !aKind.value && bKind.value -> -1
-                else -> null
+fun compareConstValue(a: Constant, b: Constant): Int? {
+    when {
+        a is Constant.Boolean && b is Constant.Boolean -> {
+            return when {
+                a.value == b.value -> 0
+                a.value && !b.value -> 1
+                else -> -1
             }
         }
-        aKind is RsLiteralKind.Integer && bKind is RsLiteralKind.Integer -> {
-            val aV = aKind.value
-            val bV = bKind.value
-            if (aV == null || bV == null) null
-            else aV.compareTo(bV)
+        a is Constant.Integer && b is Constant.Integer -> {
+            return a.value.compareTo(b.value)
         }
-        aKind is RsLiteralKind.Float && bKind is RsLiteralKind.Float -> {
-            val aV = aKind.value
-            val bV = bKind.value
-            if (aV == null || bV == null) null
-            else aV.compareTo(bV)
+        a is Constant.Double && b is Constant.Double -> {
+            return a.value.compareTo(b.value)
         }
-        aKind is RsLiteralKind.String && bKind is RsLiteralKind.String -> {
-            val aV = aKind.value
-            val bV = bKind.value
-            if (aV == null || bV == null) null
-            else aV.compareTo(bV)
+        a is Constant.String && b is Constant.String -> {
+            return a.value.compareTo(b.value)
         }
-        aKind is RsLiteralKind.Char && bKind is RsLiteralKind.Char -> {
-            val aV = aKind.value
-            val bV = bKind.value
-            if (aV == null || bV == null) null
-            else aV.compareTo(bV)
+        a is Constant.Char && b is Constant.Char -> {
+            return a.value.compareTo(b.value)
         }
-        else -> null
+        a is Constant.Path && b is Constant.Path -> {
+            val aR = a.value.path.reference.resolve()
+            val bR = b.value.path.reference.resolve()
+            return if (aR?.equals(bR) == true) 0
+            else null
+        }
+        else -> return 0
     }
 }
 
@@ -367,6 +377,28 @@ fun Ty.subTys(): List<Ty> {
 }
 
 // ************************************************** UTILS VAL **************************************************
+val RsExpr.value: Constant
+    get() {
+        return when (this) {
+            is RsLitExpr -> {
+                val kind = kind
+                when (kind) {
+                    is RsLiteralKind.Boolean -> Constant.Boolean(kind.value)
+                    is RsLiteralKind.Integer -> Constant.Integer(kind.value ?: 0)
+                    is RsLiteralKind.Float -> Constant.Double(kind.value ?: 0.0)
+                    is RsLiteralKind.String -> Constant.String(kind.value ?: "")
+                    is RsLiteralKind.Char -> Constant.Char(kind.value ?: "")
+                    null -> Constant.Unknown
+                }
+            }
+            is RsPathExpr -> {
+                Constant.Path(this)
+            }
+            is RsUnaryExpr -> TODO()
+            else -> TODO()
+        }
+    }
+
 val Constructor.size: Int
     get() {
         return when (this) {
@@ -486,7 +518,7 @@ val RsPat.kind: PatternKind
                 getLeafOrVariant(item, subpatterns)
             }
             is RsPatConst -> {
-                PatternKind.Constant(expr)
+                PatternKind.Constant(expr.value)
             }
 
             is RsPatRef -> TODO()
