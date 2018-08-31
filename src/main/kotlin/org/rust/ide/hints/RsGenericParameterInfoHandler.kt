@@ -5,8 +5,10 @@
 
 package org.rust.ide.hints
 
+import com.google.common.annotations.VisibleForTesting
 import com.intellij.codeInsight.lookup.LookupElement
 import com.intellij.lang.parameterInfo.*
+import com.intellij.lang.parameterInfo.ParameterInfoUtils.getCurrentParameterIndex
 import com.intellij.openapi.util.TextRange
 import com.intellij.util.containers.nullize
 import org.rust.lang.core.psi.*
@@ -14,10 +16,12 @@ import org.rust.lang.core.psi.ext.*
 
 private const val WHERE_PREFIX = "where "
 
-class RsGenericParameterInfoHandler : ParameterInfoHandler<RsTypeArgumentList, RsGenericPresentation> {
+class RsGenericParameterInfoHandler : ParameterInfoHandler<RsTypeArgumentList, HintLine> {
 
+    @VisibleForTesting
     var curParam = -1
         private set
+    @VisibleForTesting
     var hintText = ""
         private set
 
@@ -25,10 +29,10 @@ class RsGenericParameterInfoHandler : ParameterInfoHandler<RsTypeArgumentList, R
         context.highlightedElement = null
         context.showHint(element, element.textRange.startOffset, this)
     }
-    
-    // todo: don't disappear in nested generic types
+
+    // TODO: don't disappear in nested generic types
     override fun updateParameterInfo(parameterOwner: RsTypeArgumentList, context: UpdateParameterInfoContext) {
-        curParam = ParameterInfoUtils.getCurrentParameterIndex(parameterOwner.node, context.offset, RsElementTypes.COMMA)
+        curParam = getCurrentParameterIndex(parameterOwner.node, context.offset, RsElementTypes.COMMA)
         when {
             context.parameterOwner == null -> context.parameterOwner = parameterOwner
 
@@ -37,18 +41,13 @@ class RsGenericParameterInfoHandler : ParameterInfoHandler<RsTypeArgumentList, R
         }
     }
 
-    override fun updateUI(p: RsGenericPresentation, context: ParameterInfoUIContext) {
+    override fun updateUI(p: HintLine, context: ParameterInfoUIContext) {
         hintText = p.presentText
-        val (startOffset, endOffset) =
-            if (hintText.startsWith(WHERE_PREFIX))
-                0 to WHERE_PREFIX.length
-            else
-                p.getRange(curParam).startOffset to p.getRange(curParam).endOffset
         context.setupUIComponentPresentation(
             hintText,
-            startOffset,
-            endOffset,
-            false, // grayed
+            p.getRange(curParam).startOffset,
+            p.getRange(curParam).endOffset,
+            false, // define whole hint line grayed
             false,
             false, // define grayed part of args before highlight
             context.defaultParameterColor
@@ -65,17 +64,14 @@ class RsGenericParameterInfoHandler : ParameterInfoHandler<RsTypeArgumentList, R
     override fun findElementForParameterInfo(context: CreateParameterInfoContext): RsTypeArgumentList? {
         val parameterList = findExceptColonColon(context) ?: return null
         val parent = parameterList.parent
-        val genericDeclaration = when (parent) {
-            is RsMethodCall,
-            is RsPath -> parent.reference?.resolve()
-            else -> return null
-        } as? RsGenericDeclaration ?: return null
+        val genericDeclaration = if (parent is RsMethodCall || parent is RsPath) {
+            parent.reference?.resolve()  as? RsGenericDeclaration ?: return null
+        } else {
+            return null
+        }
         val typesWithBounds = genericDeclaration.typeParameters.nullize() ?: return null
-        context.itemsToShow = listOfNotNull(
-            RsGenericPresentation(typesWithBounds, false),
-            RsGenericPresentation(typesWithBounds, true))
-            .filterNot { it.presentText == "" }
-            .toTypedArray()
+        val presenter = RsGenericPresenter(typesWithBounds)
+        context.itemsToShow = listOfNotNull(presenter.firstLine, presenter.secondLine).toTypedArray()
         return parameterList
     }
 
@@ -83,66 +79,62 @@ class RsGenericParameterInfoHandler : ParameterInfoHandler<RsTypeArgumentList, R
     private fun findExceptColonColon(context: ParameterInfoContext?): RsTypeArgumentList? {
         val element = context?.file?.findElementAt(context.editor.caretModel.offset) ?: return null
         if (element.elementType == RsElementTypes.COLONCOLON) return null
-        return element.ancestorStrict() ?: return null
+        return element.ancestorStrict()
     }
 }
 
 /**
  * Stores the text representation and ranges for parameters
  */
-
-class RsGenericPresentation(
-    private val params: List<RsTypeParameter>,
-    unrecognizedPartOfWhere: Boolean
+class HintLine(
+    val presentText: String,
+    val ranges: List<TextRange>
 ) {
-    val toText = if (!unrecognizedPartOfWhere) {
-        params.map { param ->
+    fun getRange(index: Int) = if (index !in 0 until ranges.size) TextRange.EMPTY_RANGE else ranges[index]
+}
+
+/**
+ * Calculates the text representation and ranges for parameters
+ */
+class RsGenericPresenter(
+    private val params: List<RsTypeParameter>
+) {
+    val firstLine by lazy {
+        val splited = params.map { param ->
             param.name ?: return@map ""
-            val QSizedBound =
-                if (!param.isSized)
-                    listOf("?Sized")
-                else
-                    emptyList()
-            val declaredBounds =
-                param.bounds
-                    // `?Sized`, if needed, in separate val, `Sized` shouldn't be shown
-                    .filter {
-                        it.bound.traitRef?.resolveToBoundTrait?.element?.isSizedTrait == false
-                    }
-                    .mapNotNull { it.bound.traitRef?.path?.text }
+            val QSizedBound = if (!param.isSized) listOf("?Sized") else emptyList()
+            val declaredBounds = param.bounds
+                // `?Sized`, if needed, in separate val, `Sized` shouldn't be shown
+                .filter { it.bound.traitRef?.resolveToBoundTrait?.element?.isSizedTrait == false }
+                .mapNotNull { it.bound.traitRef?.path?.text }
             val allBounds = QSizedBound + declaredBounds
             param.name + (allBounds.nullize()?.joinToString(prefix = ": ", separator = " + ") ?: "")
         }
-    } else {
+        HintLine(splited.joinToString(), splited.indices.map { splited.calculateRange(it) })
+    }
+
+    /**
+     * Not null, when complicated parts of where exists,
+     * i.e. `where i32: SomeTrait<T>` or `where Option<T>: SomeTrait`
+     */
+    val secondLine by lazy {
         val owner = params.getOrNull(0)?.parent?.parent as? RsGenericDeclaration
         val wherePreds = owner?.whereClause?.wherePredList.orEmpty()
             // retain specific preds
             .filterNot {
                 params.contains((it.typeReference?.typeElement as? RsBaseType)?.path?.reference?.resolve())
             }
-        wherePreds.map { it.text }
-    }
-
-    val presentText = toText.nullize()?.joinToString(
-        prefix = if (!unrecognizedPartOfWhere) "" else WHERE_PREFIX
-    ) ?: ""
-
-    fun getRange(index: Int): TextRange {
-        return if (index < 0 || index >= ranges.size)
-            TextRange.EMPTY_RANGE
-        else
-            ranges[index]
-    }
-
-    private val ranges: List<TextRange> =
-        if (!unrecognizedPartOfWhere) {
-            toText.indices.map { calculateRange(it) }
+        val splited = wherePreds.map { it.text }
+        if (splited.isNotEmpty()) {
+            HintLine(splited.joinToString(prefix = WHERE_PREFIX),
+                splited.indices.map { TextRange(0, WHERE_PREFIX.length) })
         } else {
-            emptyList()
+            null
         }
+    }
 
-    private fun calculateRange(index: Int): TextRange {
-        val start = toText.take(index).sumBy { it.length + 2 } // plus ", "
-        return TextRange(start, start + toText[index].length)
+    private fun List<String>.calculateRange(index: Int): TextRange {
+        val start = this.take(index).sumBy { it.length + 2 } // plus ", "
+        return TextRange(start, start + this[index].length)
     }
 }

@@ -5,12 +5,15 @@
 
 package org.rust.ide.hints
 
+import com.google.common.annotations.VisibleForTesting
 import com.intellij.testFramework.utils.parameterInfo.MockCreateParameterInfoContext
 import com.intellij.testFramework.utils.parameterInfo.MockParameterInfoUIContext
 import com.intellij.testFramework.utils.parameterInfo.MockUpdateParameterInfoContext
+import com.intellij.ui.Hint
 import junit.framework.AssertionFailedError
 import junit.framework.TestCase
 import org.intellij.lang.annotations.Language
+import org.junit.Test
 import org.rust.RsTestBase
 
 
@@ -229,7 +232,6 @@ class RsGenericParameterInfoHandlerTest : RsTestBase() {
         impl<P> Trait</*caret*/> for S<P> { }
     """, "T", "", 0)
 
-
     private fun checkByText(@Language("Rust") code: String, hint: String, where: String, index: Int) {
         myFixture.configureByText("main.rs", replaceCaretMarker(code))
         val handler = RsGenericParameterInfoHandler()
@@ -243,11 +245,11 @@ class RsGenericParameterInfoHandlerTest : RsTestBase() {
             val items = createContext.itemsToShow ?: throw AssertionFailedError("Parameters are not shown")
             if (items.isEmpty()) throw AssertionFailedError("Parameters are empty")
             val context = MockParameterInfoUIContext(elt)
-            handler.updateUI(items[0] as RsGenericPresentation, context)
+            handler.updateUI(items[0] as HintLine, context)
             TestCase.assertEquals(hint, handler.hintText)
 
             if (items.size > 1) {
-                handler.updateUI(items[1] as RsGenericPresentation, context)
+                handler.updateUI(items[1] as HintLine, context)
                 TestCase.assertEquals("Second line mismatched: ", where, handler.hintText)
             } else {
                 TestCase.assertEquals("Expected second line: ", where, "")
