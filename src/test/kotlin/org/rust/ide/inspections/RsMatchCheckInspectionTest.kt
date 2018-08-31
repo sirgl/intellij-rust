@@ -31,12 +31,9 @@ class RsMatchCheckInspectionTest : RsInspectionsTestBase(RsMatchCheckInspection(
             };
             let b = 2;
             let c = THREE::END;
-            match b {
-                1 => {},
-                2 => {},
-                _ => {},
-                3 => {}
-
+            match c {
+                THREE::START => {},
+                THREE::END => {}
             }
 //            match a {
 //                ONE::A{b: x, a: 2} => {},

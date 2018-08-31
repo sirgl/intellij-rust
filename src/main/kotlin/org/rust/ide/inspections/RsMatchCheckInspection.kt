@@ -149,7 +149,7 @@ fun specializeRow(row: List<Pattern>?, constructor: Constructor): List<Pattern>?
             if (constructor == pat.constructors?.first()) {
                 patternsForVariant(kind.subpatterns, constructor.size)
             } else {
-                emptyList()
+                null
             }
         }
         is PatternKind.Leaf -> {
@@ -205,7 +205,7 @@ sealed class Constructor(open val ty: Ty) {
 
     /// Enum variants.
     // Variant(DefId)
-    data class Variant(val variant: RsEnumVariant, override val ty: TyAdt) : Constructor(ty)
+    data class Variant(val variant: RsEnumVariant, val index: Int, override val ty: TyAdt) : Constructor(ty)
 
     /// Literal values.
     //ConstantValue(&'tcx ty::Const<'tcx>),
@@ -315,7 +315,7 @@ fun allConstructors(ty: Ty): List<Constructor> {
         ty is TyArray || ty is TySlice -> TODO()
 
         ty is TyAdt && ty.item is RsEnumItem -> {
-            ty.item.enumBody?.enumVariantList?.map { Constructor.Variant(it, ty) } ?: emptyList()
+            ty.item.enumBody?.enumVariantList?.map { Constructor.Variant(it, it.index, ty) } ?: emptyList()
         }
         else -> {
             listOf(Constructor.Single(ty))
@@ -423,7 +423,7 @@ val TyAdt.isNonExhaustiveEnum: Boolean
         val attr = attrList.find {
             it.metaItem.name == "non_exhaustive"
         }
-        return attr == null
+        return attr != null
     }
 
 val RsExpr.value: Constant
@@ -470,7 +470,7 @@ val Pattern.constructors: List<Constructor>?
             is PatternKind.Variant -> {
                 val enum = (ty as TyAdt).item as RsEnumItem
                 val variant = enum.enumBody?.enumVariantList?.get(kind.variantIndex) ?: return emptyList()
-                listOf(Constructor.Variant(variant, ty))
+                listOf(Constructor.Variant(variant, variant.index, ty))
             }
             is PatternKind.Leaf, is PatternKind.Deref -> listOf(Constructor.Single(ty))
             is PatternKind.Constant -> listOf(Constructor.ConstantValue(kind.value, ty))
