@@ -3,6 +3,7 @@ package org.rust.ide.inspections
 import com.intellij.codeInspection.ProblemHighlightType
 import com.intellij.codeInspection.ProblemsHolder
 import org.rust.ide.inspections.fixes.AddWildcardArmFix
+import org.rust.ide.inspections.fixes.SubstituteTextFix
 import org.rust.lang.core.psi.*
 import org.rust.lang.core.psi.ext.*
 import org.rust.lang.core.types.ty.*
@@ -30,7 +31,12 @@ class RsMatchCheckInspection : RsLocalInspectionTool() {
                     println()
                     if (!useful) {
                         val matchArm = o.matchBody?.matchArmList?.get(i) ?: continue
-                        holder.registerProblem(matchArm, "Useless match arm", ProblemHighlightType.GENERIC_ERROR)
+                        holder.registerProblem(
+                            matchArm,
+                            "Useless match arm",
+                            ProblemHighlightType.GENERIC_ERROR,
+                            SubstituteTextFix.delete("Remove useless arm", o.containingFile, matchArm.textRange)
+                        )
                     }
                 }
             }
@@ -43,12 +49,6 @@ class RsMatchCheckInspection : RsLocalInspectionTool() {
 fun checkExhaustive(match: RsMatchExpr, holder: ProblemsHolder) {
     val matrix = match.matrix
     if (isUseful(matrix.map { it.first }, listOf(Pattern(TyUnknown, PatternKind.Wild)))) {
-        val newMatch = """
-            match ${match.expr?.text} {
-                ${match.matchBody?.matchArmList?.joinToString(separator = "\n") { it.text }}
-                _ => {}
-            }
-        """
         holder.registerProblem(
             match.match,
             "Match must be exhaustive",
@@ -58,8 +58,7 @@ fun checkExhaustive(match: RsMatchExpr, holder: ProblemsHolder) {
     }
 }
 
-// TODO возможно сюда нужно передавать дополнительную информацию для опеределения ноды в дереве
-fun checkArms(arms: List<Pair<List<Pattern>, RsMatchArmGuard?>>, holder: ProblemsHolder) {
+/*fun checkArms(arms: List<Pair<List<Pattern>, RsMatchArmGuard?>>, holder: ProblemsHolder) {
     println("<top>.checkArms(arms = $arms, holder = $holder)")
     val seen = mutableListOf<List<Pattern>>()
     var catchAll = false
@@ -74,12 +73,11 @@ fun checkArms(arms: List<Pair<List<Pattern>, RsMatchArmGuard?>>, holder: Problem
             }
             if (pair.second == null) {
                 seen.add(v)
-                if (catchAll == false && false/*check catchall for RsPat*/) catchAll = true
+                if (catchAll == false && false*//*check catchall for RsPat*//*) catchAll = true
             }
         }
     }
-
-}
+}*/
 
 // Use algorithm from 3.1 http://moscova.inria.fr/~maranget/papers/warn/warn004.html
 fun isUseful(matrix: List<List<Pattern>?>, v: List<Pattern>): Boolean {
@@ -145,8 +143,6 @@ fun isUseful(matrix: List<List<Pattern>?>, v: List<Pattern>): Boolean {
 }
 
 fun isUsefulS(matrix: List<List<Pattern>?>, v: List<Pattern>, constructor: Constructor): Boolean {
-//    val subTys = constructor.ty.subTys()
-//    val wildPattern = subTys.map { Pattern(it, PatternKind.Wild) }
     println("<top>.isUsefulS(matrix = $matrix, v = $v, constructor = $constructor)")
 
     val newMatrix = matrix.map { specializeRow(it, constructor) }.mapNotNull { it }
@@ -225,19 +221,15 @@ sealed class Constructor(open val ty: Ty) {
     data class Single(override val ty: Ty) : Constructor(ty)
 
     /// Enum variants.
-    // Variant(DefId)
     data class Variant(val variant: RsEnumVariant, val index: Int, override val ty: TyAdt) : Constructor(ty)
 
     /// Literal values.
-    //ConstantValue(&'tcx ty::Const<'tcx>),
     data class ConstantValue(val value: Constant, override val ty: Ty) : Constructor(ty)
 
     /// Ranges of literal values (`2...5` and `2..5`).
-    //ConstantRange(&'tcx ty::Const<'tcx>, &'tcx ty::Const<'tcx>, RangeEnd),
-    data class ConstantRange(val start: RsPatConst, val end: RsPatConst, val includeEnd: Boolean = false, override val ty: Ty) : Constructor(ty)
+    data class ConstantRange(val start: Constant, val end: Constant, val includeEnd: Boolean = false, override val ty: Ty) : Constructor(ty)
 
     /// Array patterns of length n.
-    //Slice(u64),
     data class Slice(val size: Int, override val ty: Ty) : Constructor(ty)
 }
 
@@ -261,54 +253,24 @@ sealed class PatternKind {
 
 
     /// Foo(...) or Foo{...} or Foo, where `Foo` is a variant name from an adt with >1 variants
-    /*Variant {
-        adt_def: &'tcx AdtDef,
-        substs: &'tcx Substs<'tcx>,
-        variant_index: usize,
-        subpatterns: Vec<FieldPattern<'tcx>>,
-    }*/
     data class Variant(val ty: TyAdt, val variantIndex: Int, val subpatterns: List<FieldPattern>) : PatternKind()
 
     /// (...), Foo(...), Foo{...}, or Foo, where `Foo` is a variant name from an adt with 1 variant
-    /*Leaf {
-        subpatterns: Vec<FieldPattern<'tcx>>,
-    }*/
     data class Leaf(val subpatterns: List<FieldPattern>) : PatternKind()
 
     /// box P, &P, &mut P, etc
-    /*Deref {
-        subpattern: Pattern<'tcx>,
-    }*/
     data class Deref(val subpattern: Pattern) : PatternKind()
 
-    /*Constant {
-        value: &'tcx ty::Const<'tcx>,
-    }*/
     data class Constant(val value: org.rust.ide.inspections.Constant) : PatternKind()
 
-    /*Range {
-        lo: &'tcx ty::Const<'tcx>,
-        hi: &'tcx ty::Const<'tcx>,
-        end: RangeEnd,
-    }*/
-    data class Range(val lc: RsConstant, val rc: RsConstant, val included: Boolean) : PatternKind()
+    data class Range(val lc: org.rust.ide.inspections.Constant, val rc: org.rust.ide.inspections.Constant, val included: Boolean) : PatternKind()
 
     /// matches against a slice, checking the length and extracting elements.
     /// irrefutable when there is a slice pattern and both `prefix` and `suffix` are empty.
     /// e.g. `&[ref xs..]`.
-    /*Slice {
-        prefix: Vec<Pattern<'tcx>>,
-        slice: Option<Pattern<'tcx>>,
-        suffix: Vec<Pattern<'tcx>>,
-    }*/
     data class Slice(val prefix: List<Pattern>, val slice: Pattern?, val suffix: List<Pattern>) : PatternKind()
 
     /// fixed match against an array, irrefutable
-    /*Array {
-        prefix: Vec<Pattern<'tcx>>,
-        slice: Option<Pattern<'tcx>>,
-        suffix: Vec<Pattern<'tcx>>,
-    }*/
     data class Array(val prefix: List<Pattern>, val slice: Pattern?, val suffix: List<Pattern>) : PatternKind()
 }
 
@@ -327,21 +289,17 @@ fun allConstructors(ty: Ty): List<Constructor> {
     println("<top>.allConstructors(ty = $ty)")
     // TODO check uninhabited
     return when {
-        ty is TyBool -> {
-            listOf(true, false).map {
-                Constructor.ConstantValue(Constant.Boolean(it), ty)
-            }
+        ty is TyBool -> listOf(true, false).map {
+            Constructor.ConstantValue(Constant.Boolean(it), ty)
         }
+        ty is TyAdt && ty.item is RsEnumItem -> ty.item.enumBody?.enumVariantList?.map {
+            Constructor.Variant(it, it.index, ty)
+        } ?: emptyList()
+
         ty is TyArray && ty.size != null -> TODO()
         ty is TyArray || ty is TySlice -> TODO()
 
-        ty is TyAdt && ty.item is RsEnumItem -> {
-            ty.item.enumBody?.enumVariantList?.map { Constructor.Variant(it, it.index, ty) } ?: emptyList()
-        }
-        else -> {
-            listOf(Constructor.Single(ty))
-        }
-
+        else -> listOf(Constructor.Single(ty))
     }
 }
 
@@ -355,12 +313,8 @@ fun lowerPattern(pat: RsPat): Pattern {
 
 fun getLeafOrVariant(item: RsElement, subpatterns: List<FieldPattern>): PatternKind {
     return when (item) {
-        is RsEnumVariant -> {
-            PatternKind.Variant(TyAdt.valueOf(item.parentEnum), item.index, subpatterns)
-        }
-        is RsStructItem -> {
-            PatternKind.Leaf(subpatterns)
-        }
+        is RsEnumVariant -> PatternKind.Variant(TyAdt.valueOf(item.parentEnum), item.index, subpatterns)
+        is RsStructItem -> PatternKind.Leaf(subpatterns)
         else -> error("Impossible case $item")
     }
 }
@@ -377,33 +331,27 @@ fun patternsForVariant(subpatterns: List<FieldPattern>, size: Int): List<Pattern
 }
 
 fun compareConstValue(a: Constant, b: Constant): Int? {
-    when {
-        a is Constant.Boolean && b is Constant.Boolean -> {
-            return when {
-                a.value == b.value -> 0
-                a.value && !b.value -> 1
-                else -> -1
-            }
+    return when {
+        a is Constant.Boolean && b is Constant.Boolean -> when {
+            a.value == b.value -> 0
+            a.value && !b.value -> 1
+            else -> -1
         }
-        a is Constant.Integer && b is Constant.Integer -> {
-            return a.value.compareTo(b.value)
-        }
-        a is Constant.Double && b is Constant.Double -> {
-            return a.value.compareTo(b.value)
-        }
-        a is Constant.String && b is Constant.String -> {
-            return a.value.compareTo(b.value)
-        }
-        a is Constant.Char && b is Constant.Char -> {
-            return a.value.compareTo(b.value)
-        }
+        a is Constant.Integer && b is Constant.Integer -> a.value.compareTo(b.value)
+
+        a is Constant.Double && b is Constant.Double -> a.value.compareTo(b.value)
+
+        a is Constant.String && b is Constant.String -> a.value.compareTo(b.value)
+
+        a is Constant.Char && b is Constant.Char -> a.value.compareTo(b.value)
+
         a is Constant.Path && b is Constant.Path -> {
             val aR = a.value.path.reference.resolve()
             val bR = b.value.path.reference.resolve()
-            return if (aR?.equals(bR) == true) 0
+            if (aR?.equals(bR) == true) 0
             else null
         }
-        else -> return 0
+        else -> 0
     }
 }
 
@@ -428,22 +376,11 @@ fun Ty.subTys(): List<Ty> {
     }
 }
 
-/*fun isUninhabited(ty: Ty): Boolean {
-    if(EXHAUSTIVE_PATTERNS.state == FeatureState.ACTIVE) {
-        tre
-    } else {
-        false
-    }
-}*/
-
 // ************************************************** UTILS VAL **************************************************
 val RsMatchExpr.matrix: List<Pair<List<Pattern>, RsMatchArmGuard?>>
-    get() {
-        val matrix = matchBody?.matchArmList?.map { arm ->
-            arm.patList.map { lowerPattern(it) } to arm.matchArmGuard
-        } ?: emptyList()
-        return matrix
-    }
+    get() = matchBody?.matchArmList?.map { arm ->
+        arm.patList.map { lowerPattern(it) } to arm.matchArmGuard
+    } ?: emptyList()
 
 
 val TyAdt.isNonExhaustiveEnum: Boolean
@@ -481,13 +418,9 @@ val RsExpr.value: Constant
 val Constructor.size: Int
     get() {
         return when (this) {
-            is Constructor.Single -> {
-                ty.subTys().size
-            }
-            is Constructor.Variant -> {
-                this.variant.size
-            }
-            is Constructor.ConstantValue -> ty.subTys().size
+            is Constructor.Single, is Constructor.ConstantValue -> ty.subTys().size
+            is Constructor.Variant -> variant.size
+
             is Constructor.ConstantRange -> TODO()
             is Constructor.Slice -> TODO()
         }
@@ -513,9 +446,7 @@ val Pattern.constructors: List<Constructor>?
 val RsPat.type: Ty
     get() {
         return when (this) {
-            is RsPatConst -> {
-                expr.type
-            }
+            is RsPatConst -> expr.type
             is RsPatStruct, is RsPatTupleStruct -> {
                 val path = when (this) {
                     is RsPatTupleStruct -> path
@@ -524,26 +455,15 @@ val RsPat.type: Ty
                 }
                 val tmp = path?.reference?.resolve()
                 when (tmp) {
-                    is RsEnumVariant -> {
-                        TyAdt.valueOf(tmp.parentEnum)
-                    }
-                    is RsStructOrEnumItemElement -> {
-                        TyAdt.valueOf(tmp)
-                    }
-                    else -> {
-                        TyUnknown
-                    }
+                    is RsEnumVariant -> TyAdt.valueOf(tmp.parentEnum)
+                    is RsStructOrEnumItemElement -> TyAdt.valueOf(tmp)
+                    else -> TyUnknown
                 }
             }
-            is RsPatWild -> {
-                TyUnknown
-            }
-            is RsPatIdent -> {
-                patBinding.type
-            }
-            is RsPatTup -> {
-                TyTuple(patList.map { it.type })
-            }
+            is RsPatWild -> TyUnknown
+            is RsPatIdent -> patBinding.type
+            is RsPatTup -> TyTuple(patList.map { it.type })
+
             is RsPatRef -> TODO()
             is RsPatUniq -> TODO()
             is RsPatRange -> TODO()
@@ -606,7 +526,7 @@ val RsPat.kind: PatternKind
                     if (ty.item is RsEnumItem) {
                         println("<top>.RsPat.kind() RsPatConst.expr it EnumVariant")
                         val variant = (expr as RsPathExpr).path.reference.resolve() as RsEnumVariant
-                        PatternKind.Variant(ty, (variant as RsEnumVariant).index, emptyList())
+                        PatternKind.Variant(ty, variant.index, emptyList())
                     } else {
                         error("Unresolved constant")
                     }
