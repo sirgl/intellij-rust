@@ -2,6 +2,7 @@ package org.rust.ide.inspections
 
 import com.intellij.codeInspection.ProblemHighlightType
 import com.intellij.codeInspection.ProblemsHolder
+import org.rust.ide.inspections.fixes.AddWildcardArmFix
 import org.rust.lang.core.psi.*
 import org.rust.lang.core.psi.ext.*
 import org.rust.lang.core.types.ty.*
@@ -12,10 +13,12 @@ class RsMatchCheckInspection : RsLocalInspectionTool() {
 
     override fun buildVisitor(holder: ProblemsHolder, isOnTheFly: Boolean) = object : RsVisitor() {
         override fun visitMatchExpr(o: RsMatchExpr) {
+
             println("**************************************** NEW ****************************************")
-            val matrix = o.matchBody?.matchArmList?.map { arm ->
-                arm.patList.map { lowerPattern(it) } to arm.matchArmGuard
-            } ?: emptyList()
+
+            checkExhaustive(o, holder)
+
+            val matrix = o.matrix
             matrix.forEach {
                 println(it)
             }
@@ -37,6 +40,23 @@ class RsMatchCheckInspection : RsLocalInspectionTool() {
 }
 
 // ************************************************** ALGORITHM **************************************************
+fun checkExhaustive(match: RsMatchExpr, holder: ProblemsHolder) {
+    val matrix = match.matrix
+    if (isUseful(matrix.map { it.first }, listOf(Pattern(TyUnknown, PatternKind.Wild)))) {
+        val newMatch = """
+            match ${match.expr?.text} {
+                ${match.matchBody?.matchArmList?.joinToString(separator = "\n") { it.text }}
+                _ => {}
+            }
+        """
+        holder.registerProblem(
+            match.match,
+            "Match must be exhaustive",
+            ProblemHighlightType.ERROR,
+            AddWildcardArmFix(match)
+        )
+    }
+}
 
 // TODO возможно сюда нужно передавать дополнительную информацию для опеределения ноды в дереве
 fun checkArms(arms: List<Pair<List<Pattern>, RsMatchArmGuard?>>, holder: ProblemsHolder) {
@@ -112,7 +132,8 @@ fun isUseful(matrix: List<List<Pattern>?>, v: List<Pattern>): Boolean {
             } ?: false
         } else {
             val newMatrix = matrix.map {
-                if (it?.get(0)?.kind is PatternKind.Wild) {
+                val kind = it?.get(0)?.kind
+                if (kind is PatternKind.Wild || kind is PatternKind.Binding) {
                     it.subList(1, it.size)
                 } else {
                     null
@@ -416,6 +437,15 @@ fun Ty.subTys(): List<Ty> {
 }*/
 
 // ************************************************** UTILS VAL **************************************************
+val RsMatchExpr.matrix: List<Pair<List<Pattern>, RsMatchArmGuard?>>
+    get() {
+        val matrix = matchBody?.matchArmList?.map { arm ->
+            arm.patList.map { lowerPattern(it) } to arm.matchArmGuard
+        } ?: emptyList()
+        return matrix
+    }
+
+
 val TyAdt.isNonExhaustiveEnum: Boolean
     get() {
         val enum = item as? RsEnumItem ?: return false
