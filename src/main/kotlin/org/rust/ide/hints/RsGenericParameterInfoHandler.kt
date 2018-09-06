@@ -70,8 +70,7 @@ class RsGenericParameterInfoHandler : ParameterInfoHandler<RsTypeArgumentList, H
             return null
         }
         val typesWithBounds = genericDeclaration.typeParameters.nullize() ?: return null
-        val presenter = RsGenericPresenter(typesWithBounds)
-        context.itemsToShow = listOfNotNull(presenter.firstLine, presenter.secondLine).toTypedArray()
+        context.itemsToShow = listOfNotNull(firstLine(typesWithBounds), secondLine(typesWithBounds)).toTypedArray()
         return parameterList
     }
 
@@ -96,45 +95,41 @@ class HintLine(
 /**
  * Calculates the text representation and ranges for parameters
  */
-class RsGenericPresenter(
-    private val params: List<RsTypeParameter>
-) {
-    val firstLine by lazy {
-        val splited = params.map { param ->
-            param.name ?: return@map ""
-            val QSizedBound = if (!param.isSized) listOf("?Sized") else emptyList()
-            val declaredBounds = param.bounds
-                // `?Sized`, if needed, in separate val, `Sized` shouldn't be shown
-                .filter { it.bound.traitRef?.resolveToBoundTrait?.element?.isSizedTrait == false }
-                .mapNotNull { it.bound.traitRef?.path?.text }
-            val allBounds = QSizedBound + declaredBounds
-            param.name + (allBounds.nullize()?.joinToString(prefix = ": ", separator = " + ") ?: "")
-        }
-        HintLine(splited.joinToString(), splited.indices.map { splited.calculateRange(it) })
+private fun firstLine(params: List<RsTypeParameter>): HintLine {
+    val splited = params.map { param ->
+        param.name ?: return@map ""
+        val QSizedBound = if (!param.isSized) listOf("?Sized") else emptyList()
+        val declaredBounds = param.bounds
+            // `?Sized`, if needed, in separate val, `Sized` shouldn't be shown
+            .filter { it.bound.traitRef?.resolveToBoundTrait?.element?.isSizedTrait == false }
+            .mapNotNull { it.bound.traitRef?.path?.text }
+        val allBounds = QSizedBound + declaredBounds
+        param.name + (allBounds.nullize()?.joinToString(prefix = ": ", separator = " + ") ?: "")
     }
+    return HintLine(splited.joinToString(), splited.indices.map { splited.calculateRange(it) })
+}
 
-    /**
-     * Not null, when complicated parts of where exists,
-     * i.e. `where i32: SomeTrait<T>` or `where Option<T>: SomeTrait`
-     */
-    val secondLine by lazy {
-        val owner = params.getOrNull(0)?.parent?.parent as? RsGenericDeclaration
-        val wherePreds = owner?.whereClause?.wherePredList.orEmpty()
-            // retain specific preds
-            .filterNot {
-                params.contains((it.typeReference?.typeElement as? RsBaseType)?.path?.reference?.resolve())
-            }
-        val splited = wherePreds.map { it.text }
-        if (splited.isNotEmpty()) {
-            HintLine(splited.joinToString(prefix = WHERE_PREFIX),
-                splited.indices.map { TextRange(0, WHERE_PREFIX.length) })
-        } else {
-            null
+/**
+ * Not null, when complicated parts of where exists,
+ * i.e. `where i32: SomeTrait<T>` or `where Option<T>: SomeTrait`
+ */
+private fun secondLine(params: List<RsTypeParameter>): HintLine? {
+    val owner = params.getOrNull(0)?.parent?.parent as? RsGenericDeclaration
+    val wherePreds = owner?.whereClause?.wherePredList.orEmpty()
+        // retain specific preds
+        .filterNot {
+            params.contains((it.typeReference?.typeElement as? RsBaseType)?.path?.reference?.resolve())
         }
+    val splited = wherePreds.map { it.text }
+    return if (splited.isNotEmpty()) {
+        HintLine(splited.joinToString(prefix = WHERE_PREFIX),
+            splited.indices.map { TextRange(0, WHERE_PREFIX.length) })
+    } else {
+        null
     }
+}
 
-    private fun List<String>.calculateRange(index: Int): TextRange {
-        val start = this.take(index).sumBy { it.length + 2 } // plus ", "
-        return TextRange(start, start + this[index].length)
-    }
+private fun List<String>.calculateRange(index: Int): TextRange {
+    val start = this.take(index).sumBy { it.length + 2 } // plus ", "
+    return TextRange(start, start + this[index].length)
 }
