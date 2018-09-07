@@ -46,6 +46,8 @@ class RsMatchCheckInspection : RsLocalInspectionTool() {
 }
 
 // ************************************************** ALGORITHM **************************************************
+
+//fun checkUseless(d)
 fun checkExhaustive(match: RsMatchExpr, holder: ProblemsHolder) {
     val matrix = match.matrix
     if (isUseful(matrix.map { it.first }, listOf(Pattern(TyUnknown, PatternKind.Wild)))) {
@@ -534,6 +536,7 @@ val RsPat.kind: PatternKind
                     PatternKind.Constant(expr.value)
                 }
             }
+
             is RsPatRef -> TODO()
             is RsPatUniq -> TODO()
             is RsPatRange -> TODO()

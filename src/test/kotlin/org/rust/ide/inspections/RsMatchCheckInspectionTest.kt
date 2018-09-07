@@ -1,47 +1,112 @@
 package org.rust.ide.inspections
 
 class RsMatchCheckInspectionTest : RsInspectionsTestBase(RsMatchCheckInspection()) {
-    fun testSimple() = checkByText("""
-        enum TWO {
+    fun uselessWildcard() = checkByText("""
+        enum TEST {
             A,
-            B(THREE),
+            B
         }
-
-        enum THREE {
-            END,
-            START
+        fn main() {
+            let a = TEST::A;
+            match a {
+                TEST::A => {}
+                TEST::B => {}
+                <error descr="Useless match arm">_ => {}</error>
+            }
         }
+    """)
 
-        enum ONE {
-            A{
-                a: i32,
-                b: i32
-            },
-            B(TWO, i32, TWO)
-        }
-
-        struct TEST {
-            a: i32
+    fun uselessArmAfterExhaustive() = checkByText("""
+        enum TEST {
+            A(i32),
+            B
         }
 
         fn main() {
-            let a = ONE::A{
-                a: 4,
-                b: 2
-            };
-            let b = 2;
-            let c = THREE::END;
-            match c {
-                THREE::START => {},
-                THREE::END => {}
+            let a = TEST::A(2);
+            match a {
+                TEST::A(2) => {}
+                TEST::B => {}
+                TEST::A(_) => {}
+                <error descr="Useless match arm">TEST::A(3) => {}</error>
             }
-//            match a {
-//                ONE::A{b: x, a: 2} => {},
-//                ONE::A{a: x, b: 2} => {},
-//                ONE::B(TWO::A, _, x) => {},
-//            }
+        }
+    """)
+
+    fun uselessTwiceArm() = checkByText("""
+        enum TEST {
+            A(i32),
+            B
         }
 
-
+        fn main() {
+            let a = TEST::A(3);
+            match a {
+                TEST::A(2) => {}
+                <error descr="Useless match arm">TEST::A(2) => {}</error>
+                TEST::B => {}
+            }
+        }
     """)
+
+    fun uselessArmsAtherWildcard() = checkByText("""
+        enum TEST {
+            A(i32),
+            B
+        }
+
+        fn main() {
+            let a = TEST::A(2);
+            match a {
+                TEST::A(32) => {}
+                TEST::B => {}
+                _ => {}
+                <error descr="Useless match arm">TEST::A(23) => {}</error>
+                <error descr="Useless match arm">TEST::B => {}</error>
+                <error descr="Useless match arm">TEST::A(_) => {}</error>
+            }
+        }
+    """)
+
+    fun uselessWildcardNested() = checkByText("""
+        enum ONE {
+            A,
+            B(TWO)
+        }
+        enum TWO {
+            A(i32),
+            B
+        }
+        fn main() {
+            let a = ONE::B(TWO::A(2));
+            match a {
+                ONE::A => {}
+                ONE::B(_) => {}
+                <error descr="Useless match arm">_ => {}</error>
+            }
+        }
+    """)
+
+    fun uselessNested() = checkByText("""
+        enum ONE {
+            A,
+            B(TWO)
+        }
+        enum TWO {
+            A(i32),
+            B
+        }
+        fn main() {
+            let a = ONE::B(TWO::A(2));
+            match a {
+                ONE::A => {}
+                ONE::B(TWO::A(_)) => {}
+                ONE::B(TWO::B) => {}
+                <error descr="Useless match arm">_ => {}</error>
+            }
+        }
+    """)
+
+
+
 }
