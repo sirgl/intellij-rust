@@ -10,7 +10,7 @@ import com.intellij.openapi.components.State
 import com.intellij.openapi.options.ShowSettingsUtil
 import com.intellij.openapi.project.Project
 import com.intellij.util.io.systemIndependentPath
-import org.rust.cargo.project.configurable.RustProjectConfigurable
+import org.rust.cargo.project.configurable.RsProjectConfigurable
 import org.rust.cargo.project.settings.RustProjectSettingsService
 import org.rust.cargo.toolchain.RustToolchain
 import java.nio.file.Paths
@@ -28,8 +28,10 @@ class RustProjectSettingsServiceImpl(
         var explicitPathToStdlib: String? = null,
         var useCargoCheckForBuild: Boolean = true,
         var useCargoCheckAnnotator: Boolean = false,
+        var compileAllTargets: Boolean = true,
         var useOfflineForCargoCheck: Boolean = false,
-        var expandMacros: Boolean = true
+        var expandMacros: Boolean = true,
+        var useSkipChildren: Boolean = false
     )
 
     override fun getState(): State = state
@@ -39,7 +41,7 @@ class RustProjectSettingsServiceImpl(
     }
 
     override fun configureToolchain() {
-        ShowSettingsUtil.getInstance().editConfigurable(project, RustProjectConfigurable(project))
+        ShowSettingsUtil.getInstance().editConfigurable(project, RsProjectConfigurable(project))
     }
 
     override var data: RustProjectSettingsService.Data
@@ -51,8 +53,10 @@ class RustProjectSettingsServiceImpl(
                 explicitPathToStdlib = state.explicitPathToStdlib,
                 useCargoCheckForBuild = state.useCargoCheckForBuild,
                 useCargoCheckAnnotator = state.useCargoCheckAnnotator,
+                compileAllTargets = state.compileAllTargets,
                 useOfflineForCargoCheck = state.useOfflineForCargoCheck,
-                expandMacros = state.expandMacros
+                expandMacros = state.expandMacros,
+                useSkipChildren = state.useSkipChildren
             )
         }
         set(value) {
@@ -62,8 +66,10 @@ class RustProjectSettingsServiceImpl(
                 explicitPathToStdlib = value.explicitPathToStdlib,
                 useCargoCheckForBuild = value.useCargoCheckForBuild,
                 useCargoCheckAnnotator = value.useCargoCheckAnnotator,
+                compileAllTargets = value.compileAllTargets,
                 useOfflineForCargoCheck = value.useOfflineForCargoCheck,
-                expandMacros = value.expandMacros
+                expandMacros = value.expandMacros,
+                useSkipChildren = value.useSkipChildren
             )
             if (state != newState) {
                 state = newState
@@ -75,4 +81,3 @@ class RustProjectSettingsServiceImpl(
         project.messageBus.syncPublisher(RustProjectSettingsService.TOOLCHAIN_TOPIC).toolchainChanged()
     }
 }
-

@@ -33,7 +33,7 @@ class RsFileStub : PsiFileStubImpl<RsFile> {
 
     object Type : IStubFileElementType<RsFileStub>(RsLanguage) {
         // Bump this number if Stub structure changes
-        override fun getStubVersion(): Int = 130
+        override fun getStubVersion(): Int = 138
 
         override fun getBuilder(): StubBuilder = object : DefaultStubBuilder() {
             override fun createStubForFile(file: PsiFile): StubElement<*> = RsFileStub(file as RsFile)
@@ -112,12 +112,14 @@ fun factory(name: String): RsStubElementType<*, *> = when (name) {
     "BASE_TYPE" -> RsBaseTypeStub.Type
     "FOR_IN_TYPE" -> RsPlaceholderStub.Type("FOR_IN_TYPE", ::RsForInTypeImpl)
     "TRAIT_TYPE" -> RsTraitTypeStub.Type
+    "MACRO_TYPE" -> RsPlaceholderStub.Type("MACRO_TYPE", ::RsForInTypeImpl)
 
     "VALUE_PARAMETER_LIST" -> RsPlaceholderStub.Type("VALUE_PARAMETER_LIST", ::RsValueParameterListImpl)
     "VALUE_PARAMETER" -> RsValueParameterStub.Type
     "SELF_PARAMETER" -> RsSelfParameterStub.Type
     "TYPE_PARAMETER_LIST" -> RsPlaceholderStub.Type("TYPE_PARAMETER_LIST", ::RsTypeParameterListImpl)
     "TYPE_PARAMETER" -> RsTypeParameterStub.Type
+    "LIFETIME" -> RsLifetimeStub.Type
     "LIFETIME_PARAMETER" -> RsLifetimeParameterStub.Type
     "TYPE_ARGUMENT_LIST" -> RsPlaceholderStub.Type("TYPE_ARGUMENT_LIST", ::RsTypeArgumentListImpl)
     "ASSOC_TYPE_BINDING" -> RsAssocTypeBindingStub.Type
@@ -130,10 +132,10 @@ fun factory(name: String): RsStubElementType<*, *> = when (name) {
 
     "RET_TYPE" -> RsPlaceholderStub.Type("RET_TYPE", ::RsRetTypeImpl)
 
-    "MACRO_DEFINITION" -> RsMacroDefinitionStub.Type
+    "MACRO" -> RsMacroStub.Type
     "MACRO_CALL" -> RsMacroCallStub.Type
 
-    "INNER_ATTR" -> RsPlaceholderStub.Type("INNER_ATTR", ::RsInnerAttrImpl)
+    "INNER_ATTR" -> RsInnerAttrStub.Type
     "OUTER_ATTR" -> RsPlaceholderStub.Type("OUTER_ATTR", ::RsOuterAttrImpl)
 
     "META_ITEM" -> RsMetaItemStub.Type
@@ -944,6 +946,31 @@ class RsArrayTypeStub(
     }
 }
 
+class RsLifetimeStub(
+    parent: StubElement<*>?, elementType: IStubElementType<*, *>,
+    override val name: String?
+) : StubBase<RsLifetime>(parent, elementType),
+    RsNamedStub {
+
+    object Type : RsStubElementType<RsLifetimeStub, RsLifetime>("LIFETIME") {
+        override fun createPsi(stub: RsLifetimeStub) =
+            RsLifetimeImpl(stub, this)
+
+        override fun createStub(psi: RsLifetime, parentStub: StubElement<*>?) =
+            RsLifetimeStub(parentStub, this, psi.referenceName)
+
+        override fun deserialize(dataStream: StubInputStream, parentStub: StubElement<*>?) =
+            RsLifetimeStub(parentStub, this,
+                dataStream.readNameAsString()
+            )
+
+        override fun serialize(stub: RsLifetimeStub, dataStream: StubOutputStream) =
+            with(dataStream) {
+                writeName(stub.name)
+            }
+    }
+}
+
 class RsLifetimeParameterStub(
     parent: StubElement<*>?, elementType: IStubElementType<*, *>,
     override val name: String?
@@ -969,38 +996,38 @@ class RsLifetimeParameterStub(
     }
 }
 
-class RsMacroDefinitionStub(
+class RsMacroStub(
     parent: StubElement<*>?, elementType: IStubElementType<*, *>,
     override val name: String?,
     val macroBody: String?
-) : StubBase<RsMacroDefinition>(parent, elementType),
+) : StubBase<RsMacro>(parent, elementType),
     RsNamedStub,
     RsVisibilityStub {
 
     override val isPublic: Boolean get() = true
 
-    object Type : RsStubElementType<RsMacroDefinitionStub, RsMacroDefinition>("MACRO_DEFINITION") {
+    object Type : RsStubElementType<RsMacroStub, RsMacro>("MACRO") {
         override fun shouldCreateStub(node: ASTNode): Boolean = node.psi.parent is RsMod
 
         override fun deserialize(dataStream: StubInputStream, parentStub: StubElement<*>?) =
-            RsMacroDefinitionStub(parentStub, this,
+            RsMacroStub(parentStub, this,
                 dataStream.readNameAsString(),
                 dataStream.readUTFFastAsNullable()
             )
 
-        override fun serialize(stub: RsMacroDefinitionStub, dataStream: StubOutputStream) =
+        override fun serialize(stub: RsMacroStub, dataStream: StubOutputStream) =
             with(dataStream) {
                 writeName(stub.name)
                 writeUTFFastAsNullable(stub.macroBody)
             }
 
-        override fun createPsi(stub: RsMacroDefinitionStub): RsMacroDefinition =
-            RsMacroDefinitionImpl(stub, this)
+        override fun createPsi(stub: RsMacroStub): RsMacro =
+            RsMacroImpl(stub, this)
 
-        override fun createStub(psi: RsMacroDefinition, parentStub: StubElement<*>?) =
-            RsMacroDefinitionStub(parentStub, this, psi.name, psi.macroDefinitionBody?.text)
+        override fun createStub(psi: RsMacro, parentStub: StubElement<*>?) =
+            RsMacroStub(parentStub, this, psi.name, psi.macroBody?.text)
 
-        override fun indexStub(stub: RsMacroDefinitionStub, sink: IndexSink) = sink.indexMacroDefinition(stub)
+        override fun indexStub(stub: RsMacroStub, sink: IndexSink) = sink.indexMacro(stub)
     }
 }
 
@@ -1035,28 +1062,49 @@ class RsMacroCallStub(
     }
 }
 
+class RsInnerAttrStub(
+    parent: StubElement<*>?, elementType: IStubElementType<*, *>
+) : StubBase<RsInnerAttr>(parent, elementType) {
+
+    object Type : RsStubElementType<RsInnerAttrStub, RsInnerAttr>("INNER_ATTR") {
+        override fun createPsi(stub: RsInnerAttrStub): RsInnerAttr = RsInnerAttrImpl(stub, this)
+
+        override fun serialize(stub: RsInnerAttrStub, dataStream: StubOutputStream) {}
+
+        override fun deserialize(dataStream: StubInputStream, parentStub: StubElement<*>?): RsInnerAttrStub =
+            RsInnerAttrStub(parentStub, this)
+
+        override fun createStub(psi: RsInnerAttr, parentStub: StubElement<*>?): RsInnerAttrStub =
+            RsInnerAttrStub(parentStub, this)
+
+        override fun indexStub(stub: RsInnerAttrStub, sink: IndexSink) {
+            sink.indexInnerAttr(stub)
+        }
+    }
+}
+
 class RsMetaItemStub(
     parent: StubElement<*>?, elementType: IStubElementType<*, *>,
-    val referenceName: String,
+    val name: String?,
     val hasEq: Boolean,
     val value: String?
 ) : StubBase<RsMetaItem>(parent, elementType) {
     object Type : RsStubElementType<RsMetaItemStub, RsMetaItem>("META_ITEM") {
         override fun createStub(psi: RsMetaItem, parentStub: StubElement<*>?): RsMetaItemStub =
-            RsMetaItemStub(parentStub, this, psi.referenceName, psi.eq != null, psi.litExpr?.stringLiteralValue)
+            RsMetaItemStub(parentStub, this, psi.name, psi.eq != null, psi.litExpr?.stringLiteralValue)
 
         override fun createPsi(stub: RsMetaItemStub): RsMetaItem = RsMetaItemImpl(stub, this)
 
         override fun serialize(stub: RsMetaItemStub, dataStream: StubOutputStream) =
             with(dataStream) {
-                writeName(stub.referenceName)
+                writeName(stub.name)
                 writeBoolean(stub.hasEq)
                 writeUTFFastAsNullable(stub.value)
             }
 
         override fun deserialize(dataStream: StubInputStream, parentStub: StubElement<*>?): RsMetaItemStub =
             RsMetaItemStub(parentStub, this,
-                dataStream.readNameAsString()!!,
+                dataStream.readNameAsString(),
                 dataStream.readBoolean(),
                 dataStream.readUTFFastAsNullable())
 

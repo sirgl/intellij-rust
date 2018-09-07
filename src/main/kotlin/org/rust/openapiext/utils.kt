@@ -5,7 +5,6 @@
 
 package org.rust.openapiext
 
-import com.intellij.execution.configurations.GeneralCommandLine
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.command.WriteCommandAction
 import com.intellij.openapi.fileEditor.FileDocumentManager
@@ -25,7 +24,6 @@ import com.intellij.psi.PsiManager
 import com.intellij.psi.search.GlobalSearchScope
 import com.intellij.psi.stubs.StubIndex
 import com.intellij.psi.stubs.StubIndexKey
-import com.intellij.util.io.systemIndependentPath
 import org.jdom.Element
 import org.jdom.input.SAXBuilder
 import java.nio.file.Path
@@ -78,13 +76,6 @@ val VirtualFile.pathAsPath: Path get() = Paths.get(path)
 fun VirtualFile.toPsiFile(project: Project): PsiFile? =
     PsiManager.getInstance(project).findFile(this)
 
-
-@Suppress("FunctionName")
-fun GeneralCommandLine(path: Path, vararg args: String) = GeneralCommandLine(path.systemIndependentPath, *args)
-
-fun GeneralCommandLine.withWorkDirectory(path: Path?) = withWorkDirectory(path?.systemIndependentPath)
-
-
 inline fun <Key, reified Psi : PsiElement> getElements(
     indexKey: StubIndexKey<Key, Psi>,
     key: Key, project: Project,
@@ -113,3 +104,14 @@ class CachedVirtualFile(private val url: String?) {
 val isUnitTestMode: Boolean get() = ApplicationManager.getApplication().isUnitTestMode
 
 fun saveAllDocuments() = FileDocumentManager.getInstance().saveAllDocuments()
+
+inline fun testAssert(action: () -> Boolean) {
+    testAssert(action) { "Assertion failed" }
+}
+
+inline fun testAssert(action: () -> Boolean, lazyMessage: () -> Any) {
+    if (isUnitTestMode && !action()) {
+        val message = lazyMessage()
+        throw AssertionError(message)
+    }
+}

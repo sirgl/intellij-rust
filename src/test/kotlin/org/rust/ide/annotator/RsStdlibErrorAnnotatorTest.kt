@@ -5,16 +5,11 @@
 
 package org.rust.ide.annotator
 
-import org.rust.lang.RsTestBase
+import org.rust.ProjectDescriptor
+import org.rust.WithStdlibAndDependencyRustProjectDescriptor
 
-class RsStdlibErrorAnnotatorTest : RsAnnotatorTestBase() {
-    override fun getProjectDescriptor() = RsTestBase.WithStdlibAndDependencyRustProjectDescriptor
-
-    override fun setUp() {
-        super.setUp()
-        projectDescriptor.setUp(myFixture)
-    }
-
+@ProjectDescriptor(WithStdlibAndDependencyRustProjectDescriptor::class)
+class RsStdlibErrorAnnotatorTest : RsAnnotationTestBase() {
     fun `test E0428 respects crate aliases`() = checkErrors("""
         extern crate libc as libc_alias;
         mod libc {}

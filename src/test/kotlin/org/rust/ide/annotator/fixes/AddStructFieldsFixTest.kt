@@ -6,17 +6,16 @@
 package org.rust.ide.annotator.fixes
 
 import org.intellij.lang.annotations.Language
-import org.rust.ide.annotator.RsAnnotatorTestBase
+import org.rust.ProjectDescriptor
+import org.rust.WithStdlibRustProjectDescriptor
+import org.rust.ide.annotator.RsAnnotationTestBase
 
-class AddStructFieldsFixTest : RsAnnotatorTestBase() {
-
-    override fun getProjectDescriptor() = WithStdlibRustProjectDescriptor
-
+class AddStructFieldsFixTest : RsAnnotationTestBase() {
     fun `test no fields`() = checkBothQuickFix("""
         struct S { foo: i32, bar: f64 }
 
         fn main() {
-            let _ = S { /*caret*/ };
+            let _ = <error>S</error> { /*caret*/ };
         }
     """, """
         struct S { foo: i32, bar: f64 }
@@ -26,39 +25,57 @@ class AddStructFieldsFixTest : RsAnnotatorTestBase() {
         }
     """)
 
+    fun `test aliased struct`() = checkBothQuickFix("""
+        struct S { foo: i32, bar: f64 }
+        type T = S;
+
+        fn main() {
+            let _ = <error>T</error> { /*caret*/ };
+        }
+    """, """
+        struct S { foo: i32, bar: f64 }
+        type T = S;
+
+        fn main() {
+            let _ = T { foo: /*caret*/0, bar: 0.0 };
+        }
+    """)
+
+    @ProjectDescriptor(WithStdlibRustProjectDescriptor::class)
     fun `test no comma`() = checkBothQuickFix("""
         struct S { a: i32, b: String }
 
         fn main() {
-            S { a: 92/*caret*/};
+            <error>S</error> { a: 92/*caret*/};
         }
-        """, """
+    """, """
         struct S { a: i32, b: String }
 
         fn main() {
             S { a: 92, b: /*caret*/String::new() };
         }
-        """)
+    """)
 
+    @ProjectDescriptor(WithStdlibRustProjectDescriptor::class)
     fun `test with comma`() = checkBothQuickFix("""
         struct S { a: i32, b: String }
 
         fn main() {
-            S { a: 92, /*caret*/};
+            <error>S</error> { a: 92, /*caret*/};
         }
-        """, """
+    """, """
         struct S { a: i32, b: String }
 
         fn main() {
             S { a: 92, b: /*caret*/String::new() };
         }
-        """)
+    """)
 
     fun `test some existing fields`() = checkBothQuickFix("""
         struct S { a: i32, b: i32, c: i32, d: i32 }
 
         fn main() {
-            let _ = S {
+            let _ = <error>S</error> {
                 a: 92,
                 c: 92/*caret*/
             };
@@ -80,7 +97,7 @@ class AddStructFieldsFixTest : RsAnnotatorTestBase() {
         struct S { a: i32, b: i32 }
 
         fn main() {
-            let _ = S { b: 0,/*caret*/ };
+            let _ = <error>S</error> { b: 0,/*caret*/ };
         }
     """, """
         struct S { a: i32, b: i32 }
@@ -94,7 +111,7 @@ class AddStructFieldsFixTest : RsAnnotatorTestBase() {
         struct S { a: i32, b: i32 }
 
         fn main() {
-            let _ = S { /*caret*/a: 0 };
+            let _ = <error>S</error> { /*caret*/a: 0 };
         }
     """, """
         struct S { a: i32, b: i32 }
@@ -108,7 +125,7 @@ class AddStructFieldsFixTest : RsAnnotatorTestBase() {
         struct S { a: i32, b: i32, c: i32, d: i32, e: i32}
 
         fn main() {
-            let _ = S { a: 0, c: 1, e: 2/*caret*/ };
+            let _ = <error>S</error> { a: 0, c: 1, e: 2/*caret*/ };
         }
     """, """
         struct S { a: i32, b: i32, c: i32, d: i32, e: i32}
@@ -118,6 +135,7 @@ class AddStructFieldsFixTest : RsAnnotatorTestBase() {
         }
     """)
 
+    @ProjectDescriptor(WithStdlibRustProjectDescriptor::class)
     fun `test issue 980`() = checkBothQuickFix("""
         struct Mesh {
             pub name: String,
@@ -127,7 +145,7 @@ class AddStructFieldsFixTest : RsAnnotatorTestBase() {
         }
 
         fn main() {
-            Mesh{/*caret*/}
+            <error>Mesh</error>{/*caret*/};
         }
     """, """
         struct Mesh {
@@ -143,10 +161,11 @@ class AddStructFieldsFixTest : RsAnnotatorTestBase() {
                 vertices: Vec::new(),
                 faces: Vec::new(),
                 material: None,
-            }
+            };
         }
     """)
 
+    @ProjectDescriptor(WithStdlibRustProjectDescriptor::class)
     fun `test many type fields`() = checkBothQuickFix("""
         type AliasedString = String;
 
@@ -177,7 +196,7 @@ class AddStructFieldsFixTest : RsAnnotatorTestBase() {
         }
 
         fn main() {
-            DataContainer{/*caret*/}
+            <error>DataContainer</error>{/*caret*/};
         }
     """, """
         type AliasedString = String;
@@ -233,10 +252,11 @@ class AddStructFieldsFixTest : RsAnnotatorTestBase() {
                 tuple_field: (false, '', 0, String::new()),
                 aliased_field: String::new(),
                 unsupported_type_field: (),
-            }
+            };
         }
     """)
 
+    @ProjectDescriptor(WithStdlibRustProjectDescriptor::class)
     fun `test 1-level recursively fill struct`() = checkRecursiveQuickFix("""
         struct MetaData {
             author: String,
@@ -253,7 +273,7 @@ class AddStructFieldsFixTest : RsAnnotatorTestBase() {
         }
 
         fn main() {
-            Mesh{/*caret*/}
+            <error>Mesh</error>{/*caret*/};
         }
     """, """
         struct MetaData {
@@ -281,10 +301,11 @@ class AddStructFieldsFixTest : RsAnnotatorTestBase() {
                     licence: None,
                     specVersion: 0,
                 },
-            }
+            };
         }
     """)
 
+    @ProjectDescriptor(WithStdlibRustProjectDescriptor::class)
     fun `test 2-level recursively fill struct`() = checkRecursiveQuickFix("""
         struct ToolInfo {
             name: String,
@@ -307,7 +328,7 @@ class AddStructFieldsFixTest : RsAnnotatorTestBase() {
         }
 
         fn main() {
-            Mesh{/*caret*/}
+            <error>Mesh</error>{/*caret*/};
         }
     """, """
         struct ToolInfo {
@@ -342,16 +363,16 @@ class AddStructFieldsFixTest : RsAnnotatorTestBase() {
                     specVersion: 0,
                     tool: ToolInfo { name: String::new(), toolVersion: String::new() },
                 },
-            }
+            };
         }
     """)
 
     private fun checkBothQuickFix(@Language("Rust") before: String, @Language("Rust") after: String) {
-        checkQuickFix("Add missing fields", before, after)
-        checkQuickFix("Recursively add missing fields", before, after)
+        checkFixByText("Add missing fields", before, after)
+        checkFixByText("Recursively add missing fields", before, after)
     }
 
     private fun checkRecursiveQuickFix(@Language("Rust") before: String, @Language("Rust") after: String) =
-        checkQuickFix("Recursively add missing fields", before, after)
+        checkFixByText("Recursively add missing fields", before, after)
 
 }

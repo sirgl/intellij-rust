@@ -5,26 +5,15 @@
 
 package org.rust.lang.core.types.ty
 
-import com.intellij.util.BitUtil
 import org.rust.ide.presentation.tyToString
 import org.rust.lang.core.psi.RsStructItem
-import org.rust.lang.core.psi.RsTypeParameter
 import org.rust.lang.core.psi.ext.namedFields
 import org.rust.lang.core.psi.ext.positionalFields
-import org.rust.lang.core.types.BoundElement
+import org.rust.lang.core.types.*
 import org.rust.lang.core.types.infer.TypeFoldable
 import org.rust.lang.core.types.infer.TypeFolder
 import org.rust.lang.core.types.infer.TypeVisitor
 import org.rust.lang.core.types.infer.substitute
-import org.rust.lang.core.types.type
-
-typealias Substitution = Map<TyTypeParameter, Ty>
-val emptySubstitution: Substitution = emptyMap()
-
-typealias TypeFlags = Int
-const val HAS_TY_INFER_MASK: Int = 1
-const val HAS_TY_TYPE_PARAMETER_MASK: Int = 2
-const val HAS_TY_PROJECTION_MASK: Int = 4
 
 /**
  * Represents both a type, like `i32` or `S<Foo, Bar>`, as well
@@ -33,13 +22,13 @@ const val HAS_TY_PROJECTION_MASK: Int = 4
  * The name `Ty` is short for `Type`, inspired by the Rust
  * compiler.
  */
-abstract class Ty(val flags: TypeFlags = 0): TypeFoldable<Ty> {
+abstract class Ty(override val flags: TypeFlags = 0) : Kind, TypeFoldable<Ty> {
 
-    override fun foldWith(folder: TypeFolder): Ty = folder(this)
+    override fun foldWith(folder: TypeFolder): Ty = folder.foldTy(this)
 
     override fun superFoldWith(folder: TypeFolder): Ty = this
 
-    override fun visitWith(visitor: TypeVisitor): Boolean = visitor(this)
+    override fun visitWith(visitor: TypeVisitor): Boolean = visitor.visitTy(this)
 
     override fun superVisitWith(visitor: TypeVisitor): Boolean = false
 
@@ -63,37 +52,14 @@ enum class Mutability {
     companion object {
         fun valueOf(mutable: Boolean): Mutability =
             if (mutable) MUTABLE else IMMUTABLE
+
+        val DEFAULT_MUTABILITY = MUTABLE
     }
 }
 
 fun Ty.getTypeParameter(name: String): TyTypeParameter? {
-    return typeParameterValues.keys.find { it.toString() == name }
+    return typeParameterValues.typeParameterByName(name)
 }
-
-val Ty.hasTyInfer
-    get(): Boolean = BitUtil.isSet(flags, HAS_TY_INFER_MASK)
-
-val Ty.hasTyTypeParameters
-    get(): Boolean = BitUtil.isSet(flags, HAS_TY_TYPE_PARAMETER_MASK)
-
-val Ty.hasTyProjection
-    get(): Boolean = BitUtil.isSet(flags, HAS_TY_PROJECTION_MASK)
-
-fun <K, V : TypeFoldable<V>> Map<K, V>.substituteInValues(map: Substitution): Map<K, V> =
-    mapValues { (_, value) -> value.substitute(map) }
-
-fun <K, V : TypeFoldable<V>> Map<K, V>.foldValues(folder: TypeFolder): Map<K, V> =
-    mapValues { (_, value) -> value.foldWith(folder) }
-
-fun Substitution.get(psi: RsTypeParameter): Ty? {
-    return get(TyTypeParameter.named((psi)))
-}
-
-fun mergeFlags(element: BoundElement<*>): TypeFlags =
-    element.subst.values.fold(0) { a, b -> a or b.flags } or element.assoc.values.fold(0) { a, b -> a or b.flags }
-
-fun mergeFlags(tys: List<Ty>): TypeFlags =
-    tys.fold(0) { a, b -> a or b.flags }
 
 tailrec fun Ty.isSized(): Boolean {
     return when (this) {

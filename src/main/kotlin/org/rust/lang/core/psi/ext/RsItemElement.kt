@@ -5,7 +5,6 @@
 
 package org.rust.lang.core.psi.ext
 
-import org.rust.lang.core.macros.ExpansionResult
+import org.rust.lang.core.macros.RsExpandedElement
 
-interface RsItemElement : RsVisibilityOwner, RsOuterAttributeOwner, ExpansionResult
-
+interface RsItemElement : RsVisibilityOwner, RsOuterAttributeOwner, RsExpandedElement

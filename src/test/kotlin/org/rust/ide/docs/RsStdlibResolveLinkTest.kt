@@ -7,13 +7,13 @@ package org.rust.ide.docs
 
 import com.intellij.psi.PsiManager
 import org.intellij.lang.annotations.Language
-import org.rust.lang.RsTestBase
+import org.rust.ProjectDescriptor
+import org.rust.RsTestBase
+import org.rust.WithStdlibRustProjectDescriptor
 import org.rust.lang.core.psi.ext.RsNamedElement
 
+@ProjectDescriptor(WithStdlibRustProjectDescriptor::class)
 class RsStdlibResolveLinkTest : RsTestBase() {
-
-    override fun getProjectDescriptor() = WithStdlibRustProjectDescriptor
-
     fun `test with import`() = doTest("""
         use std::hash::Hash;
 
@@ -25,6 +25,16 @@ class RsStdlibResolveLinkTest : RsTestBase() {
         fn foo(s: String) {}
           //^
     """, "String", ".../string.rs")
+
+    fun `test crate fqn link`() = doTest("""
+        fn foo() {}
+          //^
+    """, "std/index.html", ".../libstd/lib.rs")
+
+    fun `test mod fqn link`() = doTest("""
+        fn foo() {}
+          //^
+    """, "std/io/index.html", ".../libstd/io/mod.rs")
 
     private fun doTest(@Language("Rust") code: String, link: String, expectedPath: String) {
         check(expectedPath.startsWith("...")) {

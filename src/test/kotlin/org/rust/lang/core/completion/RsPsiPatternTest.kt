@@ -8,7 +8,7 @@ package org.rust.lang.core.completion
 import com.intellij.patterns.ElementPattern
 import com.intellij.psi.PsiElement
 import org.intellij.lang.annotations.Language
-import org.rust.lang.RsTestBase
+import org.rust.RsTestBase
 import org.rust.lang.core.RsPsiPattern
 
 class RsPsiPatternTest : RsTestBase() {
@@ -140,7 +140,7 @@ class RsPsiPatternTest : RsTestBase() {
         //^
         macro_rules! bar {
         }
-    """, RsPsiPattern.onMacroDefinition)
+    """, RsPsiPattern.onMacro)
 
     fun `test on mod attr`() = testPattern("""
         #[foo]
@@ -271,9 +271,15 @@ class RsPsiPatternTest : RsTestBase() {
         }
     """, RsPsiPattern.inAnyLoop)
 
-    private fun <T> testPattern(@Language("Rust") code: String, pattern: ElementPattern<T>) {
+    fun `test derived trait meta item`() = testPattern("""
+        #[derive(Debug)]
+                 //^
+        struct Foo(i32);
+    """, RsPsiPattern.derivedTraitMetaItem)
+
+    private inline fun <reified T : PsiElement> testPattern(@Language("Rust") code: String, pattern: ElementPattern<T>) {
         InlineFile(code)
-        val element = findElementInEditor<PsiElement>()
+        val element = findElementInEditor<T>()
         assertTrue(pattern.accepts(element))
     }
 

@@ -5,6 +5,9 @@
 
 package org.rust.ide.inspections
 
+import org.rust.ProjectDescriptor
+import org.rust.WithStdlibRustProjectDescriptor
+
 class RsTypeCheckInspectionTest : RsInspectionsTestBase(RsTypeCheckInspection()) {
     fun `test type mismatch E0308 primitive`() = checkByText("""
         fn main () {
@@ -138,6 +141,32 @@ class RsTypeCheckInspectionTest : RsInspectionsTestBase(RsTypeCheckInspection())
 
         fn foo(w: &Wrapper<u32>) {
             let _: RefWrapper<u32> = RefWrapper(w);
+        }
+    """)
+
+    // issue 2670
+    fun `test no type mismatch E0308 when matching with string literal`() = checkByText("""
+        fn main() {
+            match "" {
+                "" => {}
+                _ => {}
+            }
+        }
+    """)
+
+    // https://github.com/intellij-rust/intellij-rust/issues/2482
+    @ProjectDescriptor(WithStdlibRustProjectDescriptor::class)
+    fun `test issue 2482`() = checkByText("""
+        fn main() {
+            let string: String = "string".to_owned();
+        }
+    """)
+
+    // https://github.com/intellij-rust/intellij-rust/issues/2460
+    @ProjectDescriptor(WithStdlibRustProjectDescriptor::class)
+    fun `test issue 2460`() = checkByText("""
+        fn f64compare(x: &f64, y: &f64) -> ::std::cmp::Ordering {
+            x.partial_cmp(y).unwrap()
         }
     """)
 }

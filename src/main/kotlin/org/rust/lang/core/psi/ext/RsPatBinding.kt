@@ -16,9 +16,30 @@ import org.rust.lang.core.resolve.ref.RsPatBindingReferenceImpl
 import org.rust.lang.core.resolve.ref.RsReference
 import org.rust.lang.core.types.ty.Mutability
 
-val RsPatBinding.isRef: Boolean get() = bindingMode?.ref != null
-val RsPatBinding.mutability: Mutability get() = Mutability.valueOf(bindingMode?.mut != null)
+sealed class RsBindingModeKind {
+    class BindByReference(val mutability: Mutability) : RsBindingModeKind()
+    class BindByValue(val mutability: Mutability) : RsBindingModeKind()
+}
+
+val RsPatBinding.mutability: Mutability
+    get() {
+        val kind = kind
+        return when (kind) {
+            is RsBindingModeKind.BindByValue -> kind.mutability
+            is RsBindingModeKind.BindByReference -> Mutability.IMMUTABLE
+        }
+    }
+
 val RsPatBinding.isArg: Boolean get() = parent?.parent is RsValueParameter
+
+val RsPatBinding.kind: RsBindingModeKind
+    get() {
+        val bindingMode = bindingMode
+        val ref = bindingMode?.ref != null
+        val mutability = Mutability.valueOf(bindingMode?.mut != null)
+
+        return if (ref) RsBindingModeKind.BindByReference(mutability) else RsBindingModeKind.BindByValue(mutability)
+    }
 
 val RsPatBinding.topLevelPattern: RsPat
     get() = ancestors
@@ -55,7 +76,8 @@ abstract class RsPatBindingImplMixin(node: ASTNode) : RsNamedElementImpl(node),
     override fun getUseScope(): SearchScope {
         val owner = PsiTreeUtil.getParentOfType(this,
             RsBlock::class.java,
-            RsFunction::class.java
+            RsFunction::class.java,
+            RsLambdaExpr::class.java
         )
 
         if (owner != null) return LocalSearchScope(owner)

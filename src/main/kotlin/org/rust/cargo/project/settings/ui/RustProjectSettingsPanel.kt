@@ -34,7 +34,7 @@ class RustProjectSettingsPanel(
     private val versionUpdateDebouncer = UiDebouncer(this)
 
     private val pathToToolchainField = pathToDirectoryTextField(this,
-        "Select directory with cargo binary", { update() })
+        "Select directory with cargo binary") { update() }
 
     private val pathToStdlibField = pathToDirectoryTextField(this,
         "Select directory with standard library source code")
@@ -96,7 +96,7 @@ class RustProjectSettingsPanel(
         versionUpdateDebouncer.run(
             onPooledThread = {
                 val toolchain = RustToolchain(Paths.get(pathToToolchain))
-                val rustcVersion = toolchain.queryVersions().rustc.semver
+                val rustcVersion = toolchain.queryVersions().rustc?.semver
                 val rustup = toolchain.rustup
                 val stdlibLocation = rustup?.getStdlibFromSysroot()?.presentableUrl
                 Triple(rustcVersion, stdlibLocation, rustup != null)
@@ -105,6 +105,7 @@ class RustProjectSettingsPanel(
                 downloadStdlibLink.isVisible = hasRustup && stdlibLocation == null
 
                 pathToStdlibField.isEditable = !hasRustup
+                pathToStdlibField.button.isEnabled = !hasRustup
                 if (hasRustup) {
                     pathToStdlibField.text = stdlibLocation ?: ""
                 }
