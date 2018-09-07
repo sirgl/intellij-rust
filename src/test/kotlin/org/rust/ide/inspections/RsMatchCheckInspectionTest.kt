@@ -1,7 +1,7 @@
 package org.rust.ide.inspections
 
 class RsMatchCheckInspectionTest : RsInspectionsTestBase(RsMatchCheckInspection()) {
-    fun uselessWildcard() = checkByText("""
+    fun testUselessWildcard() = checkByText("""
         enum TEST {
             A,
             B
@@ -16,7 +16,7 @@ class RsMatchCheckInspectionTest : RsInspectionsTestBase(RsMatchCheckInspection(
         }
     """)
 
-    fun uselessArmAfterExhaustive() = checkByText("""
+    fun testUselessArmAfterExhaustive() = checkByText("""
         enum TEST {
             A(i32),
             B
@@ -33,7 +33,7 @@ class RsMatchCheckInspectionTest : RsInspectionsTestBase(RsMatchCheckInspection(
         }
     """)
 
-    fun uselessTwiceArm() = checkByText("""
+    fun testUselessTwiceArm() = checkByText("""
         enum TEST {
             A(i32),
             B
@@ -45,11 +45,12 @@ class RsMatchCheckInspectionTest : RsInspectionsTestBase(RsMatchCheckInspection(
                 TEST::A(2) => {}
                 <error descr="Useless match arm">TEST::A(2) => {}</error>
                 TEST::B => {}
+                _ => {}
             }
         }
     """)
 
-    fun uselessArmsAtherWildcard() = checkByText("""
+    fun testUselessArmsAtherWildcard() = checkByText("""
         enum TEST {
             A(i32),
             B
@@ -68,7 +69,7 @@ class RsMatchCheckInspectionTest : RsInspectionsTestBase(RsMatchCheckInspection(
         }
     """)
 
-    fun uselessWildcardNested() = checkByText("""
+    fun testUselessWildcardNested() = checkByText("""
         enum ONE {
             A,
             B(TWO)
@@ -87,7 +88,7 @@ class RsMatchCheckInspectionTest : RsInspectionsTestBase(RsMatchCheckInspection(
         }
     """)
 
-    fun uselessNested() = checkByText("""
+    fun testUselessNested() = checkByText("""
         enum ONE {
             A,
             B(TWO)
@@ -108,5 +109,56 @@ class RsMatchCheckInspectionTest : RsInspectionsTestBase(RsMatchCheckInspection(
     """)
 
 
+    fun testExhaustiveNumeric() = checkByText("""
+        fn main() {
+            let a = 4;
+            <error descr="Match must be exhaustive">match</error> a {
+                2 => {}
+            }
+        }
+    """)
+
+    fun testExhaustiveChar() = checkByText("""
+        fn main() {
+            let c = '2';
+            <error descr="Match must be exhaustive">match</error> c {
+                '3' => {}
+                '4' => {}
+            }
+        }
+    """)
+
+    fun testExhaustiveEnum() = checkByText("""
+        enum TEST {
+            A,
+            B
+        }
+
+        fn main() {
+            let a = TEST::A;
+            <error descr="Match must be exhaustive">match</error> a {
+                TEST::B => {}
+            }
+        }
+    """)
+
+    fun testExhaustiveNestedEnum() = checkByText("""
+        enum ONE {
+            A(TWO),
+            B
+        }
+        enum TWO {
+            A,
+            B(i32)
+        }
+        fn main() {
+            let a = ONE::A(TWO::B(3));
+            <error descr="Match must be exhaustive">match</error> a {
+                ONE::A(TWO::A) => {}
+                ONE::A(TWO::B(2)) => {}
+                ONE::B => {}
+            }
+        }
+    """)
 
 }

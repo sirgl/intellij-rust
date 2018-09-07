@@ -47,7 +47,6 @@ class RsMatchCheckInspection : RsLocalInspectionTool() {
 
 // ************************************************** ALGORITHM **************************************************
 
-//fun checkUseless(d)
 fun checkExhaustive(match: RsMatchExpr, holder: ProblemsHolder) {
     val matrix = match.matrix
     if (isUseful(matrix.map { it.first }, listOf(Pattern(TyUnknown, PatternKind.Wild)))) {
