@@ -53,7 +53,7 @@ fun checkExhaustive(match: RsMatchExpr, holder: ProblemsHolder) {
         holder.registerProblem(
             match.match,
             "Match must be exhaustive",
-            ProblemHighlightType.ERROR,
+            ProblemHighlightType.GENERIC_ERROR,
             AddWildcardArmFix(match)
         )
     }
@@ -321,6 +321,7 @@ fun getLeafOrVariant(item: RsElement, subpatterns: List<FieldPattern>): PatternK
 }
 
 fun patternsForVariant(subpatterns: List<FieldPattern>, size: Int): List<Pattern> {
+    println("<top>.patternsForVariant(subpatterns = $subpatterns, size = $size)")
     val result = mutableListOf<Pattern>()
     repeat(size) {
         result.add(Pattern(TyUnknown, PatternKind.Wild))
@@ -364,14 +365,18 @@ fun RsFieldsOwner.indexOf(pat: RsPatField): Int {
 }
 
 fun Ty.subTys(): List<Ty> {
+    println("<top>.subTys() ty=$this")
     return when (this) {
         is TyTuple -> {
+            println("<top>.subTys this is tuple subty=${this.types}")
             this.types
         }
         is TyAdt -> {
+            println("<top>.subTys this is adt subty=$typeArguments")
             this.typeArguments
         }
         else -> {
+            println("<top>.subTys this is something subty=${emptyList<Ty>()}")
             emptyList()
         }
     }
@@ -419,11 +424,35 @@ val RsExpr.value: Constant
 val Constructor.size: Int
     get() {
         return when (this) {
-            is Constructor.Single, is Constructor.ConstantValue -> ty.subTys().size
+            is Constructor.Single -> ty.size
+            is Constructor.ConstantValue -> ty.subTys().size
             is Constructor.Variant -> variant.size
 
             is Constructor.ConstantRange -> TODO()
             is Constructor.Slice -> TODO()
+        }
+    }
+
+val Ty.size: Int
+    get() {
+        println("<top>.Ty.size() ty=$this")
+        return when (this) {
+            is TyTuple -> {
+                println("<top>.Ty.size() this is typle ${types.size} ")
+                this.types.size
+            }
+            is TyAdt -> {
+                println("<top>.Ty.size() this is adt adt=$this")
+                val structOrEnum = item
+                when (structOrEnum) {
+                    is RsStructItem -> structOrEnum.size
+                    is RsEnumItem -> typeArguments.size
+                    else -> 0
+                }
+            }
+            else -> {
+                0
+            }
         }
     }
 

@@ -16,9 +16,9 @@ class AddWildcardArmFix(match: RsMatchExpr) : LocalQuickFixOnPsiElement(match) {
                             }
                         """
 
-    override fun getFamilyName() = "ADD"
+    override fun getFamilyName() = "Add wildcard pattern"
 
-    override fun getText() = "ADD"
+    override fun getText() = familyName
 
     override fun invoke(project: Project, file: PsiFile, startElement: PsiElement, endElement: PsiElement) {
         val match = RsPsiFactory(project).createExpression(newMatchText) as RsMatchExpr
