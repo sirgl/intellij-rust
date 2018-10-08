@@ -3,7 +3,6 @@ package org.rust.ide.inspections
 import com.intellij.codeInspection.ProblemHighlightType
 import com.intellij.codeInspection.ProblemsHolder
 import org.rust.ide.inspections.fixes.AddWildcardArmFix
-import org.rust.ide.inspections.fixes.SubstituteTextFix
 import org.rust.lang.core.psi.*
 import org.rust.lang.core.psi.ext.*
 import org.rust.lang.core.types.ty.*
@@ -18,28 +17,28 @@ class RsMatchCheckInspection : RsLocalInspectionTool() {
             println("**************************************** NEW ****************************************")
 
             checkExhaustive(o, holder)
-
-            val matrix = o.matrix
-            matrix.forEach {
-                println(it)
-            }
-            println()
-            for ((i, row) in matrix.withIndex()) {
-                if (i > 0) {
-                    val useful = isUseful(matrix.subList(0, i).map { it.first }, row.first)
-                    println("match arm ${row.first} isUseful=$useful")
-                    println()
-                    if (!useful) {
-                        val matchArm = o.matchBody?.matchArmList?.get(i) ?: continue
-                        holder.registerProblem(
-                            matchArm,
-                            "Useless match arm",
-                            ProblemHighlightType.GENERIC_ERROR,
-                            SubstituteTextFix.delete("Remove useless arm", o.containingFile, matchArm.textRange)
-                        )
-                    }
-                }
-            }
+//
+//            val matrix = o.matrix
+//            matrix.forEach {
+//                println(it)
+//            }
+//            println()
+//            for ((i, row) in matrix.withIndex()) {
+//                if (i > 0) {
+//                    val useful = isUseful(matrix.subList(0, i).map { it.first }, row.first, false)
+//                    println("match arm ${row.first} isUseful=$useful")
+//                    println()
+//                    if (!useful.isUseful()) {
+//                        val matchArm = o.matchBody?.matchArmList?.get(i) ?: continue
+//                        holder.registerProblem(
+//                            matchArm,
+//                            "Useless match arm",
+//                            ProblemHighlightType.GENERIC_ERROR,
+//                            SubstituteTextFix.delete("Remove useless arm", o.containingFile, matchArm.textRange)
+//                        )
+//                    }
+//                }
+//            }
         }
 
     }
@@ -48,14 +47,24 @@ class RsMatchCheckInspection : RsLocalInspectionTool() {
 // ************************************************** ALGORITHM **************************************************
 
 fun checkExhaustive(match: RsMatchExpr, holder: ProblemsHolder) {
+    println("<top>.checkExhaustive(match = $match, holder = $holder)")
     val matrix = match.matrix
-    if (isUseful(matrix.map { it.first }, listOf(Pattern(TyUnknown, PatternKind.Wild)))) {
-        holder.registerProblem(
-            match.match,
-            "Match must be exhaustive",
-            ProblemHighlightType.GENERIC_ERROR,
-            AddWildcardArmFix(match)
-        )
+    val useful = isUseful(matrix.map { it.first }, listOf(Pattern(TyUnknown, PatternKind.Wild)), true)
+    when (useful) {
+        is Usefulness.UsefulWithWitness -> {
+            println("<top>.checkExhaustive useful=${useful.witness}")
+            holder.registerProblem(
+                match.match,
+                "Match must be exhaustive",
+                ProblemHighlightType.GENERIC_ERROR,
+                AddWildcardArmFix(match, useful.witness.last().patterns.last())
+            )
+        }
+        Usefulness.NotUseful -> println("<top>.checkExhaustive useful=$useful")
+    }
+
+    if (useful.isUseful()) {
+
     }
 }
 
@@ -81,78 +90,111 @@ fun checkExhaustive(match: RsMatchExpr, holder: ProblemsHolder) {
 }*/
 
 // Use algorithm from 3.1 http://moscova.inria.fr/~maranget/papers/warn/warn004.html
-fun isUseful(matrix: List<List<Pattern>?>, v: List<Pattern>): Boolean {
+fun isUseful(matrix: List<List<Pattern>?>, v: List<Pattern>, withWitness: Boolean): Usefulness {
     println("<top>.isUseful(matrix = $matrix, v = $v)")
 
     //// Base
 
     // Base case if we are pattern-matching on ()
-    if (matrix.width == 0) {
-        return matrix.height == 0
+    if (v.isEmpty()) {
+        return if (matrix.height == 0) {
+            if (withWitness) Usefulness.UsefulWithWitness(listOf(Witness(mutableListOf())))
+            else Usefulness.Useful
+        } else {
+            Usefulness.NotUseful
+        }
     }
 
     //// Induction
-
+    val type = matrix.mapNotNull { it?.get(0)?.ty }.find { it !== TyUnknown } ?: v[0].ty
 
     val constructors = v[0].constructors
 
-    println("<top>.isUseful expand first col: expanding ${v[0]}")
+    println("<top>.isUseful expand first col: expanding ${v[0]} type=$type")
     return if (constructors != null) {
         println("<top>.isUseful expanding constructors $constructors")
         constructors.map {
-            isUsefulS(matrix, v, it)
-        }.find { it == true } ?: false
+            isUsefulS(matrix, v, it, type, withWitness)
+        }.find { it.isUseful() } ?: Usefulness.NotUseful
     } else {
         println("<top>.isUseful expanding wildcard")
         val usedConstructors = matrix.map { it?.get(0)?.constructors }.flatMap { it ?: emptyList() }
         println("<top>.isUseful used constructors $usedConstructors")
 
-        val ty = matrix.mapNotNull { it?.get(0) }
-            .map { it.ty }
-            .find { it != TyUnknown } ?: v[0].ty
 
-        val allConstructors = allConstructors(ty)
+        val allConstructors = allConstructors(type)
         println("<top>.isUseful allConstructors $allConstructors")
 
         val missingConstructor = allConstructors.filter { !usedConstructors.contains(it) }
 
 
         val isPrivatelyEmpty = allConstructors.isEmpty()
-        val isDeclaredNonexhaustive = (ty as? TyAdt)?.isNonExhaustiveEnum ?: false
-        println("<top>.isUseful missing constructors $missingConstructor\tis privately empty $isPrivatelyEmpty, is declared nonexhaustive $isDeclaredNonexhaustive")
+        val isDeclaredNonexhaustive = (type as? TyAdt)?.isNonExhaustiveEnum ?: false
+        println("<top>.isUseful missing constructors $missingConstructor\tis privately empty $isPrivatelyEmpty, " +
+            "is declared nonexhaustive $isDeclaredNonexhaustive")
 
         val isNonExhaustive = isPrivatelyEmpty || isDeclaredNonexhaustive
 
         return if (missingConstructor.isEmpty() && !isNonExhaustive) {
             allConstructors.map {
-                isUsefulS(matrix, v, it)
+                isUsefulS(matrix, v, it, type, withWitness)
             }.find {
-                it
-            } ?: false
+                it.isUseful()
+            } ?: Usefulness.NotUseful
         } else {
-            val newMatrix = matrix.map {
+            val newMatrix = matrix.mapNotNull {
                 val kind = it?.get(0)?.kind
-                if (kind is PatternKind.Wild || kind is PatternKind.Binding) {
+                if (kind === PatternKind.Wild || kind is PatternKind.Binding) {
                     it.subList(1, it.size)
                 } else {
                     null
                 }
-            }.mapNotNull { it }
-            isUseful(newMatrix, v.subList(1, v.size))
+            }
+            val res = isUseful(newMatrix, v.subList(1, v.size), withWitness)
+            when (res) {
+                is Usefulness.UsefulWithWitness -> {
+                    val newWitness = if (isNonExhaustive || usedConstructors.isEmpty()) {
+                        res.witness.map { witness ->
+                            witness.patterns.add(Pattern(type, PatternKind.Wild))
+                            witness
+                        }
+                    } else {
+                        res.witness.flatMap { witness ->
+                            missingConstructor.map { ctor ->
+                                witness.pushWildCtor(ctor, type)
+                                witness
+                            }
+                        }
+                    }
+                    Usefulness.UsefulWithWitness(newWitness)
+                }
+                else -> res
+            }
         }
     }
 }
 
-fun isUsefulS(matrix: List<List<Pattern>?>, v: List<Pattern>, constructor: Constructor): Boolean {
+fun isUsefulS(matrix: List<List<Pattern>?>, v: List<Pattern>, constructor: Constructor, type: Ty, withWitness: Boolean): Usefulness {
     println("<top>.isUsefulS(matrix = $matrix, v = $v, constructor = $constructor)")
 
-    val newMatrix = matrix.map { specializeRow(it, constructor) }.mapNotNull { it }
+    val newMatrix = matrix.mapNotNull { specializeRow(it, constructor) }
     println("<top>.isUsefulS newMatrix=$newMatrix")
 
     val newV = specializeRow(v, constructor)
     return when (newV) {
-        null -> false
-        else -> isUseful(newMatrix, newV)
+        null -> Usefulness.NotUseful
+        else -> {
+            val useful = isUseful(newMatrix, newV, withWitness)
+            when (useful) {
+                is Usefulness.UsefulWithWitness -> {
+                    Usefulness.UsefulWithWitness(useful.witness.map {
+                        it.applyConstructors(constructor, type)
+                        it
+                    })
+                }
+                else -> useful
+            }
+        }
     }
 }
 
@@ -165,7 +207,7 @@ fun specializeRow(row: List<Pattern>?, constructor: Constructor): List<Pattern>?
     val head: List<Pattern>? = when (kind) {
         is PatternKind.Variant -> {
             if (constructor == pat.constructors?.first()) {
-                patternsForVariant(kind.subpatterns, constructor.size)
+                patternsForVariant(kind.subpatterns, constructor.arity)
             } else {
                 null
             }
@@ -175,7 +217,7 @@ fun specializeRow(row: List<Pattern>?, constructor: Constructor): List<Pattern>?
              * Вот здесь непонятно. В соотвествии с алгоритом необходимо проверить равенство конструкторов
              * (как в случае с вариантом). Но в компиляторе они так не делают. Очень странно. И непонятно.
              */
-            patternsForVariant(kind.subpatterns, constructor.size)
+            patternsForVariant(kind.subpatterns, constructor.arity)
         }
         is PatternKind.Deref -> listOf(kind.subpattern)
         is PatternKind.Constant -> {
@@ -203,7 +245,7 @@ fun specializeRow(row: List<Pattern>?, constructor: Constructor): List<Pattern>?
         is PatternKind.Array -> TODO()
         PatternKind.Wild, is PatternKind.Binding -> {
             val result = mutableListOf<Pattern>()
-            repeat(constructor.size) {
+            repeat(constructor.arity) {
                 result.add(Pattern(TyUnknown, PatternKind.Wild))
             }
             result
@@ -214,6 +256,68 @@ fun specializeRow(row: List<Pattern>?, constructor: Constructor): List<Pattern>?
 }
 
 // ************************************************** CUSTOM DATA **************************************************
+
+class Witness(val patterns: MutableList<Pattern>) {
+    override fun toString() = patterns.toString()
+
+    fun pushWildCtor(constructor: Constructor, type: Ty) {
+        println("Witness.pushWildCtor(constructor = $constructor, type = $type)")
+        val subPatterns = constructor.subTys(type)
+        println("Witness.pushWildCtor subPatterns=$subPatterns")
+        subPatterns.forEach {
+            patterns.add(Pattern(it, PatternKind.Wild))
+        }
+        applyConstructors(constructor, type)
+    }
+
+    fun applyConstructors(constructor: Constructor, type: Ty) {
+        println("Witness.applyConstructors(constructor = $constructor, type = $type)")
+        val arity = constructor.arity
+        val len = patterns.size
+        val pats = patterns.subList(len - arity, len).reversed()
+        val pat = when (type) {
+            is TyAdt, is TyTuple -> {
+//                val pats = patterns.subList((len - arity).takeIf { it >= 0 } ?: 0, len).mapIndexed { index, pattern ->
+                val newPats = pats.mapIndexed { index, pattern ->
+                    FieldPattern(index, pattern)
+                }
+                if (type is TyAdt) {
+                    if (type.item is RsEnumItem) {
+                        PatternKind.Variant(
+                            type,
+                            (constructor as Constructor.Variant).index,
+                            newPats
+                        )
+                    } else {
+                        PatternKind.Leaf(newPats)
+                    }
+                } else {
+                    PatternKind.Leaf(newPats)
+                }
+            }
+            is TyReference -> {
+                PatternKind.Deref(pats[0])
+            }
+            is TySlice, is TyArray -> TODO()
+            else -> {
+                when (constructor) {
+                    is Constructor.ConstantValue -> PatternKind.Constant(constructor.value)
+                    else -> PatternKind.Wild
+                }
+            }
+        }
+        println("Witness.applyConstructors pat=$pat")
+        patterns.add(Pattern(type, pat))
+        println("Witness.applyConstructors patterns=$patterns")
+    }
+}
+
+sealed class Usefulness {
+    class UsefulWithWitness(val witness: List<Witness>) : Usefulness()
+    object Useful : Usefulness()
+    object NotUseful : Usefulness()
+}
+
 sealed class Constructor(open val ty: Ty) {
 
     /// The constructor of all patterns that don't vary by constructor,
@@ -236,7 +340,34 @@ sealed class Constructor(open val ty: Ty) {
 
 typealias FieldPattern = Pair<Int, Pattern>
 
-data class Pattern(val ty: Ty, val kind: PatternKind)
+data class Pattern(val ty: Ty, val kind: PatternKind) {
+    override fun toString(): String {
+        return when (kind) {
+            PatternKind.Wild -> "_"
+            is PatternKind.Binding -> "x"
+            is PatternKind.Variant -> {
+                val enum = kind.ty.item as RsEnumItem
+                val variant = enum.enumBody?.enumVariantList?.get(kind.variantIndex) ?: return ""
+
+                if (kind.subpatterns.isEmpty()) {
+                    "${enum.identifier?.text ?: ""}::${variant.identifier.text}"
+
+                } else {
+                    "${enum.identifier?.text
+                        ?: ""}::${variant.identifier.text}(${kind.subpatterns.sortedBy { it.first }.joinToString { it.second.toString() }})"
+                }
+            }
+            is PatternKind.Leaf -> {
+                kind.subpatterns.toString()
+            }
+            is PatternKind.Deref -> kind.toString()
+            is PatternKind.Constant -> kind.value.toString()
+            is PatternKind.Range -> TODO()
+            is PatternKind.Slice -> TODO()
+            is PatternKind.Array -> TODO()
+        }
+    }
+}
 
 sealed class PatternKind {
     object Wild : PatternKind()
@@ -286,11 +417,18 @@ sealed class Constant {
 }
 
 // ************************************************** UTILS FUNC **************************************************
+
+
+fun Usefulness.isUseful(): Boolean = when (this) {
+    Usefulness.NotUseful -> false
+    else -> true
+}
+
 fun allConstructors(ty: Ty): List<Constructor> {
     println("<top>.allConstructors(ty = $ty)")
     // TODO check uninhabited
     return when {
-        ty is TyBool -> listOf(true, false).map {
+        ty === TyBool -> listOf(true, false).map {
             Constructor.ConstantValue(Constant.Boolean(it), ty)
         }
         ty is TyAdt && ty.item is RsEnumItem -> ty.item.enumBody?.enumVariantList?.map {
@@ -382,6 +520,43 @@ fun Ty.subTys(): List<Ty> {
     }
 }
 
+fun Constructor.subTys(type: Ty): List<Ty> {
+    println("<top>.subTys(type = $type)")
+    return when (type) {
+        is TyTuple -> {
+            type.types
+        }
+        is TySlice, is TyArray -> when (this) {
+            is Constructor.Slice -> {
+                (0..(this.size - 1)).map { ty }
+            }
+            is Constructor.ConstantValue -> listOf()
+            else -> error("bad slice pattern")
+        }
+        is TyReference -> listOf(type.referenced)
+        is TyAdt -> {
+            // TODO check box
+            // TODO ok?
+            when (this) {
+                is Constructor.Single -> TODO()
+                is Constructor.Variant -> {
+                    this.variant.tupleFields?.tupleFieldDeclList?.map { it.typeReference.type }
+                        ?: this.variant.blockFields?.fieldDeclList?.mapNotNull { it.typeReference?.type }
+                        ?: run {
+                            println("NOTHING IN SUB TYS")
+                            listOf<Ty>()
+                        }
+                }
+                else -> {
+                    println("AAA NOTHING IN SUB TYS")
+                    listOf()
+                }
+            }
+        }
+        else -> listOf()
+    }
+}
+
 // ************************************************** UTILS VAL **************************************************
 val RsMatchExpr.matrix: List<Pair<List<Pattern>, RsMatchArmGuard?>>
     get() = matchBody?.matchArmList?.map { arm ->
@@ -393,10 +568,7 @@ val TyAdt.isNonExhaustiveEnum: Boolean
     get() {
         val enum = item as? RsEnumItem ?: return false
         val attrList = enum.outerAttrList
-        val attr = attrList.find {
-            it.metaItem.name == "non_exhaustive"
-        }
-        return attr != null
+        return attrList.any { it.metaItem.name == "non_exhaustive" }
     }
 
 val RsExpr.value: Constant
@@ -421,7 +593,41 @@ val RsExpr.value: Constant
         }
     }
 
-val Constructor.size: Int
+/*fun Constructor.getArity(type: Ty): Int {
+    println("<top>.getArity(type = $type)")
+    return when (type) {
+        is TyTuple -> {
+            type.types.size
+        }
+        is TySlice, is TyArray -> when (this) {
+            is Constructor.Slice -> this.size
+            is Constructor.ConstantValue -> 0
+            else -> error("bad slice pattern")
+        }
+        is TyReference -> 1
+        is TyAdt -> {
+            val item = type.item
+            when(item) {
+                is RsEnumItem -> {
+                    val variant = this as Constructor.Variant
+//                    val variant = item.enumBody?.enumVariantList?.get(v.index)
+                    variant.variant.tupleFields?.tupleFieldDeclList?.size ?: variant.variant.blockFields?.fieldDeclList?.size ?: 0
+
+                }
+                is RsStructItem -> {
+                    val s = type.item as? RsStructItem ?: return 0
+                    s.tupleFields?.tupleFieldDeclList?.size ?: s.blockFields?.fieldDeclList?.size ?: 0
+                }
+                else -> 0
+            }
+        }
+        else -> 0
+    }
+
+
+}*/
+
+val Constructor.arity: Int
     get() {
         return when (this) {
             is Constructor.Single -> ty.size
@@ -438,7 +644,7 @@ val Ty.size: Int
         println("<top>.Ty.size() ty=$this")
         return when (this) {
             is TyTuple -> {
-                println("<top>.Ty.size() this is typle ${types.size} ")
+                println("<top>.Ty.size() this is type ${types.size} ")
                 this.types.size
             }
             is TyAdt -> {

@@ -5,18 +5,19 @@ import com.intellij.openapi.project.Project
 import com.intellij.psi.PsiElement
 import com.intellij.psi.PsiFile
 import com.intellij.psi.codeStyle.CodeStyleManager
+import org.rust.ide.inspections.Pattern
 import org.rust.lang.core.psi.RsMatchExpr
 import org.rust.lang.core.psi.RsPsiFactory
 
-class AddWildcardArmFix(match: RsMatchExpr) : LocalQuickFixOnPsiElement(match) {
+class AddWildcardArmFix(match: RsMatchExpr, val pattern: Pattern) : LocalQuickFixOnPsiElement(match) {
     private val newMatchText = """
                             match ${match.expr?.text} {
                                 ${match.matchBody?.matchArmList?.joinToString(separator = "\n") { it.text }}
-                                _ => {}
+                                $pattern => {}
                             }
                         """
 
-    override fun getFamilyName() = "Add wildcard pattern"
+    override fun getFamilyName() = "Add $pattern pattern"
 
     override fun getText() = familyName
 

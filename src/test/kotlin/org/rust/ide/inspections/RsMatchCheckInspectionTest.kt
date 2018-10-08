@@ -1,6 +1,21 @@
 package org.rust.ide.inspections
 
 class RsMatchCheckInspectionTest : RsInspectionsTestBase(RsMatchCheckInspection()) {
+
+    fun testMy() = checkByText("""
+        fn main() {
+            enum ONE {
+                A(i32, i32),
+                B
+            };
+            let a = ONE::B;
+            match a {
+                ONE::B => {}
+                ONE::A(3, _) => {}
+            }
+        }
+        """)
+
     fun testUselessWildcard() = checkByText("""
         enum TEST {
             A,
