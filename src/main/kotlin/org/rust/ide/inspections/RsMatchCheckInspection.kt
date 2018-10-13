@@ -348,17 +348,36 @@ data class Pattern(val ty: Ty, val kind: PatternKind) {
             is PatternKind.Variant -> {
                 val enum = kind.ty.item as RsEnumItem
                 val variant = enum.enumBody?.enumVariantList?.get(kind.variantIndex) ?: return ""
-
-                if (kind.subpatterns.isEmpty()) {
-                    "${enum.identifier?.text ?: ""}::${variant.identifier.text}"
-
-                } else {
-                    "${enum.identifier?.text
-                        ?: ""}::${variant.identifier.text}(${kind.subpatterns.sortedBy { it.first }.joinToString { it.second.toString() }})"
-                }
+                "${enum.identifier?.text ?: ""}::${variant.identifier.text}" + if(!kind.subpatterns.isEmpty()) {
+                    "(${kind.subpatterns.sortedBy { it.first }.joinToString { it.second.toString() }})"
+                } else ""
             }
             is PatternKind.Leaf -> {
-                kind.subpatterns.toString()
+                val subpatterns = kind.subpatterns.sortedBy { it.first }
+                when (ty) {
+                    is TyTuple -> {
+                        subpatterns.joinToString(", ", "(", ")") { pattern ->
+                            pattern.second.toString()
+                        }
+                    }
+                    is TyAdt -> {
+                        val struct = ty.item as RsStructItem
+                        (struct.identifier?.text ?: "") + when {
+                            struct.blockFields != null -> {
+                                subpatterns.joinToString(",", "{", "}") { pattern ->
+                                    "${struct.blockFields?.fieldDeclList?.get(pattern.first)?.identifier?.text}: ${pattern.second}"
+                                }
+                            }
+                            struct.tupleFields != null -> {
+                                subpatterns.joinToString(",", "(", ")") { pattern ->
+                                    "${pattern.second}"
+                                }
+                            }
+                            else -> TODO("struct has no fields")
+                        }
+                    }
+                    else -> ""
+                }
             }
             is PatternKind.Deref -> kind.toString()
             is PatternKind.Constant -> kind.value.toString()
@@ -656,9 +675,8 @@ val Ty.size: Int
                     else -> 0
                 }
             }
-            else -> {
-                0
-            }
+            else -> 0
+
         }
     }
 
@@ -699,10 +717,12 @@ val RsPat.type: Ty
             is RsPatWild -> TyUnknown
             is RsPatIdent -> patBinding.type
             is RsPatTup -> TyTuple(patList.map { it.type })
+            is RsPatRange -> {
+                TODO()
+            }
 
             is RsPatRef -> TODO()
             is RsPatUniq -> TODO()
-            is RsPatRange -> TODO()
             is RsPatMacro -> TODO()
             is RsPatSlice -> TODO()
             else -> TODO()
@@ -770,10 +790,14 @@ val RsPat.kind: PatternKind
                     PatternKind.Constant(expr.value)
                 }
             }
-
+            is RsPatRange -> {
+                println("<top>.RsPat.kind() RsPatRange")
+                val a = this.patConstList.first()
+                val b = this.patConstList.last()
+                PatternKind.Range(a.expr.value, b.expr.value, this.dotdoteq != null)
+            }
             is RsPatRef -> TODO()
             is RsPatUniq -> TODO()
-            is RsPatRange -> TODO()
             is RsPatMacro -> TODO()
             is RsPatSlice -> TODO()
             else -> TODO()
