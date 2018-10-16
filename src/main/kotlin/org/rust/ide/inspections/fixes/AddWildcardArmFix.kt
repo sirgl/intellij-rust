@@ -5,7 +5,7 @@ import com.intellij.openapi.project.Project
 import com.intellij.psi.PsiElement
 import com.intellij.psi.PsiFile
 import com.intellij.psi.codeStyle.CodeStyleManager
-import org.rust.ide.inspections.Pattern
+import org.rust.ide.inspections.checkMatch.Pattern
 import org.rust.lang.core.psi.RsMatchExpr
 import org.rust.lang.core.psi.RsPsiFactory
 

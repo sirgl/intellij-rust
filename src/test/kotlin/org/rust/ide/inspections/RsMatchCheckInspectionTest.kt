@@ -1,17 +1,24 @@
 package org.rust.ide.inspections
 
+import org.rust.ide.inspections.checkMatch.RsMatchCheckInspection
+
 class RsMatchCheckInspectionTest : RsInspectionsTestBase(RsMatchCheckInspection()) {
 
     fun testMy() = checkByText("""
         fn main() {
-            enum ONE {
-                A(i32, i32),
-                B
-            };
-            let a = ONE::B;
+//            enum ONE {
+//                A(i32, i32),
+//                B
+//            };
+//            let a = ONE::B;
+//            match a {
+//                ONE::B => {}
+//                ONE::A(3, _) => {}
+//            }
+            let a = 2;
             match a {
-                ONE::B => {}
-                ONE::A(3, _) => {}
+                1 | 2 => {}
+                2 => {}
             }
         }
         """)
