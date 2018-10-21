@@ -174,12 +174,19 @@ fun specializeRow(row: List<Pattern>?, constructor: Constructor, type: Ty): List
     println("<top>.specializeRow(row = $row, constructor = $constructor)")
     row ?: return null // FIXME не уверен в надобности
 
+    val wildPatterns = mutableListOf<Pattern>()
+    repeat(constructor.arity(type)) {
+        wildPatterns.add(Pattern(TyUnknown, PatternKind.Wild, null))
+    }
+
     val pat = row[0]
     val kind = pat.kind
     val head: List<Pattern>? = when (kind) {
         is PatternKind.Variant -> {
             if (constructor == pat.constructors?.first()) {
-                patternsForVariant(kind.subpatterns, constructor.arity(type))
+//                patternsForVariant(kind.subpatterns, constructor.arity(type))
+                wildPatterns.fillWithSubPatterns(kind.subpatterns)
+                wildPatterns
             } else {
                 null
             }
@@ -189,7 +196,9 @@ fun specializeRow(row: List<Pattern>?, constructor: Constructor, type: Ty): List
              * Вот здесь непонятно. В соотвествии с алгоритом необходимо проверить равенство конструкторов
              * (как в случае с вариантом). Но в компиляторе они так не делают. Очень странно. И непонятно.
              */
-            patternsForVariant(kind.subpatterns, constructor.arity(type))
+//            patternsForVariant(kind.subpatterns, constructor.arity(type))
+            wildPatterns.fillWithSubPatterns(kind.subpatterns)
+            wildPatterns
         }
         is PatternKind.Deref -> listOf(kind.subpattern)
         is PatternKind.Constant -> when (constructor) {
@@ -204,20 +213,104 @@ fun specializeRow(row: List<Pattern>?, constructor: Constructor, type: Ty): List
             if (constructor.coveredByRange(kind.lc, kind.rc, kind.included)) listOf()
             else null
         }
-        is PatternKind.Slice -> TODO()
-        is PatternKind.Array -> TODO()
-        PatternKind.Wild, is PatternKind.Binding -> {
-            val result = mutableListOf<Pattern>()
-            repeat(constructor.arity(type)) {
-                result.add(Pattern(TyUnknown, PatternKind.Wild, null))
+        is PatternKind.Slice, is PatternKind.Array -> {
+            var prefix: List<Pattern> = listOf()
+            var slice: Pattern? = null
+            var suffix: List<Pattern> = listOf()
+            (kind as? PatternKind.Slice)?.let {
+                prefix = it.prefix
+                slice = it.slice
+                suffix = it.suffix
+            } ?: (kind as? PatternKind.Array)?.let {
+                prefix = it.prefix
+                slice = it.slice
+                suffix = it.suffix
+            } ?: error("")
+
+            when (constructor) {
+                is Constructor.Slice -> {
+                    val patternLength = prefix.size + suffix.size
+                    val sliceCount = wildPatterns.size - patternLength
+                    if(sliceCount == 0 || slice != null) {
+                       /* prefix.iter().chain(
+                            wild_patterns.iter()
+                                .map(|p| *p)
+                            .skip(prefix.len())
+                            .take(slice_count)
+                            .chain(suffix.iter())
+                        ).collect())*/
+                        prefix.plus(wildPatterns.subList(prefix.size - 1, sliceCount + prefix.size - 1)).plus(suffix)
+                    } else null
+                }
+                is Constructor.ConstantValue -> {
+                    /*match slice_pat_covered_by_constructor(
+                        cx.tcx, pat.span, constructor, prefix, slice, suffix
+                    ) {
+                        Ok(true) => Some(vec![]),
+                        Ok(false) => None,
+                        Err(ErrorReported) => None
+                    }*/
+                    TODO()
+                }
+                else -> error("")
             }
-            result
+
         }
+        PatternKind.Wild, is PatternKind.Binding -> wildPatterns
     }
     println("<top>.specializeRow head=$head")
     return head?.plus(row.subList(1, row.size))
 }
 
+fun sliceCoveredByConstructor(constructor: Constructor, prefix: List<Pattern>, slice: Pattern?, suffix: List<Pattern>): Boolean {
+    /*let data: &[u8] = match *ctor {
+        ConstantValue(const_val) => {
+            let val = match const_val.val {
+                ConstValue::Unevaluated(..) |
+                ConstValue::ByRef(..) => bug!("unexpected ConstValue: {:?}", const_val),
+                ConstValue::Scalar(val) | ConstValue::ScalarPair(val, _) => val,
+            };
+            if let Ok(ptr) = val.to_ptr() {
+                let is_array_ptr = const_val.ty
+                    .builtin_deref(true)
+                    .and_then(|t| t.ty.builtin_index())
+                    .map_or(false, |t| t == tcx.types.u8);
+                assert!(is_array_ptr);
+                tcx.alloc_map.lock().unwrap_memory(ptr.alloc_id).bytes.as_ref()
+            } else {
+                bug!("unexpected non-ptr ConstantValue")
+            }
+        }
+        _ => bug!()
+    };
+
+    let pat_len = prefix.len() + suffix.len();
+    if data.len() < pat_len || (slice.is_none() && data.len() > pat_len) {
+        return Ok(false);
+    }
+
+    for (ch, pat) in
+        data[..prefix.len()].iter().zip(prefix).chain(
+            data[data.len()-suffix.len()..].iter().zip(suffix))
+    {
+        match pat.kind {
+            box PatternKind::Constant { value } => {
+                let b = value.unwrap_bits(tcx, ty::ParamEnv::empty().and(pat.ty));
+                assert_eq!(b as u8 as u128, b);
+                if b as u8 != *ch {
+                    return Ok(false);
+                }
+            }
+            _ => {}
+        }
+    }
+    Ok(true)
+    */
+
+    val patternLength = prefix.size + suffix.size
+    return true
+
+}
 
 fun getLeafOrVariant(item: RsElement, subpatterns: List<FieldPattern>): PatternKind {
     return when (item) {
@@ -227,14 +320,8 @@ fun getLeafOrVariant(item: RsElement, subpatterns: List<FieldPattern>): PatternK
     }
 }
 
-fun patternsForVariant(subpatterns: List<FieldPattern>, size: Int): List<Pattern> {
-    println("<top>.patternsForVariant(subpatterns = $subpatterns, size = $size)")
-    val result = mutableListOf<Pattern>()
-    repeat(size) {
-        result.add(Pattern(TyUnknown, PatternKind.Wild, null))
-    }
+fun MutableList<Pattern>.fillWithSubPatterns(subpatterns: List<FieldPattern>) {
     for (subpattern in subpatterns) {
-        result[subpattern.first] = subpattern.second
+        this[subpattern.first] = subpattern.second
     }
-    return result
 }

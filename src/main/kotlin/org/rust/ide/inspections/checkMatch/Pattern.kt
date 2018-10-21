@@ -41,15 +41,15 @@ data class Pattern(val ty: Ty, val kind: PatternKind, val arm: RsMatchArm?) {
                                     "${pattern.second}"
                                 }
                             }
-                            else -> TODO("struct has no fields")
+                            else -> error("struct has no fields")
                         }
                     }
                     else -> ""
                 }
             }
+            is PatternKind.Range -> "${kind.lc}${if(kind.included) ".." else "..="}${kind.rc}"
             is PatternKind.Deref -> kind.toString()
             is PatternKind.Constant -> kind.value.toString()
-            is PatternKind.Range -> "${kind.lc}${if(kind.included) ".." else "..="}${kind.rc}"
             is PatternKind.Slice -> TODO()
             is PatternKind.Array -> TODO()
         }

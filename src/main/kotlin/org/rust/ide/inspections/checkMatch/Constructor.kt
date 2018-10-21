@@ -3,6 +3,7 @@ package org.rust.ide.inspections.checkMatch
 import org.rust.lang.core.psi.RsEnumItem
 import org.rust.lang.core.psi.RsEnumVariant
 import org.rust.lang.core.psi.RsStructItem
+import org.rust.lang.core.psi.ext.RsStructOrEnumItemElement
 import org.rust.lang.core.types.ty.*
 import org.rust.lang.core.types.type
 
@@ -25,17 +26,33 @@ sealed class Constructor {
     /// Array patterns of length n.
     data class Slice(val size: Int) : Constructor()
 
-    fun arity(type: Ty): Int {
-        println("<top>.arity(type = $type)")
-        return when (this) {
-            is Constructor.Single -> type.size
-            is Constructor.ConstantValue -> type.subTys().size
-            is Constructor.Variant -> variant.size
-
-            is Constructor.ConstantRange -> TODO()
-            is Constructor.Slice -> TODO()
+    //    fun arity(type: Ty): Int {
+//        println("<top>.arity(type = $type)")
+//        return when (this) {
+//            is Constructor.Single -> type.size
+//            is Constructor.ConstantValue -> type.subTys().size
+//            is Constructor.Variant -> variant.size
+//
+//            is Constructor.ConstantRange -> TODO()
+//            is Constructor.Slice -> TODO()
+//        }
+//    }
+    fun arity(type: Ty): Int = when (type) {
+        is TyTuple -> type.types.size
+        is TySlice, is TyArray -> when (this) {
+            is Constructor.Slice -> this.size
+            is Constructor.ConstantValue -> 0
+            else -> error("bad slice pattern")
         }
+        is TyReference -> 1
+        is TyAdt -> when (type.item) {
+            is RsStructItem -> type.item.size
+            is RsEnumItem -> type.item.enumBody?.enumVariantList?.get((this as Variant).index)?.size ?: 0
+            else -> error("bad adt pattern")
+        }
+        else -> 0
     }
+
 
     fun coveredByRange(from: Constant, to: Constant, included: Boolean): Boolean {
         return when (this) {

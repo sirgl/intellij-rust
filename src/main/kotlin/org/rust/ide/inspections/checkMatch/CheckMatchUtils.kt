@@ -20,10 +20,6 @@ val List<List<*>?>.width: Int
 val List<List<*>?>.height: Int
     get() = size
 
-//val RsMatchExpr.matrix: List<Pair<List<Pattern>, RsMatchArmGuard?>>
-//    get() = matchBody?.matchArmList?.map { arm ->
-//        arm.patList.map { lowerPattern(it) } to arm.matchArmGuard
-//    } ?: emptyList()
 val RsMatchExpr.matrix: List<Pair<List<Pattern>, RsMatchArmGuard?>>
     get() = matchBody?.matchArmList?.flatMap { arm ->
         arm.patList.map { listOf(lowerPattern(it, arm)) to arm.matchArmGuard }
@@ -186,7 +182,9 @@ val RsPat.kind: PatternKind
             is RsPatRef -> TODO()
             is RsPatUniq -> TODO()
             is RsPatMacro -> TODO()
-            is RsPatSlice -> TODO()
+            is RsPatSlice -> {
+                TODO()
+            }
             else -> TODO()
         }
 
