@@ -9,6 +9,7 @@ alobb
 alygin
 andruhon
 anton-okolelov
+amakeev
 ashleysommer
 AtomicInteger
 atsky
@@ -20,6 +21,7 @@ chriskrycho
 contradictioned
 d9n
 daschl
+dem1tris
 devurandom
 Dimonchik0036
 Falkenfighter
@@ -54,7 +56,9 @@ mhaessig
 mitchhentges
 mkaput
 mrhota
+msmorgan
 netvl
+nicholastmosher
 Nilera
 ninjabear
 oistein

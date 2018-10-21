@@ -5,10 +5,13 @@
 
 package org.rust.lang.core.resolve
 
+import org.rust.MockEdition
+import org.rust.ProjectDescriptor
+import org.rust.WithDependencyRustProjectDescriptor
+import org.rust.cargo.project.workspace.CargoWorkspace
+
+@ProjectDescriptor(WithDependencyRustProjectDescriptor::class)
 class RsPackageLibraryResolveTest : RsResolveTestBase() {
-
-    override fun getProjectDescriptor() = WithDependencyRustProjectDescriptor
-
     fun `test library as crate`() = stubOnlyResolve("""
     //- main.rs
         extern crate test_package;
@@ -227,5 +230,93 @@ class RsPackageLibraryResolveTest : RsResolveTestBase() {
     //- baz.rs
         use bar::S;
                //^ lib.rs
+    """)
+
+    fun `test transitive dependency on the same crate`() = stubOnlyResolve("""
+    //- dep-lib-new/lib.rs
+        pub struct Foo;
+    //- dep-lib/lib.rs
+        extern crate dep_lib_target;
+
+        pub use dep_lib_target::Foo;
+    //- lib.rs
+        extern crate dep_lib_target;
+
+        use dep_lib_target::Foo;
+                            //^ dep-lib-new/lib.rs
+    """, NameResolutionTestmarks.otherVersionOfSameCrate)
+
+    @MockEdition(CargoWorkspace.Edition.EDITION_2018)
+    fun `test resolve reference without extern crate item 1`() = stubOnlyResolve("""
+    //- dep-lib/lib.rs
+        pub struct Foo;
+    //- lib.rs
+        use dep_lib_target::Foo;
+                //^ dep-lib/lib.rs
+    """)
+
+    @MockEdition(CargoWorkspace.Edition.EDITION_2018)
+    fun `test resolve reference without extern crate item 2`() = stubOnlyResolve("""
+    //- dep-lib/lib.rs
+        pub struct Foo;
+    //- lib.rs
+        fn foo() -> dep_lib_target::Foo { unimplemented!() }
+                                   //^ dep-lib/lib.rs
+    """)
+
+    @MockEdition(CargoWorkspace.Edition.EDITION_2018)
+    fun `test extern crate item (edition 2018)`() = stubOnlyResolve("""
+    //- dep-lib/lib.rs
+        pub struct Foo;
+    //- lib.rs
+        extern crate dep_lib_target;
+
+        fn foo() -> dep_lib_target::Foo { unimplemented!() }
+                                   //^ dep-lib/lib.rs
+    """, ItemResolutionTestmarks.externCrateItemWithoutAlias)
+
+    @MockEdition(CargoWorkspace.Edition.EDITION_2018)
+    fun `test extern crate item alias 1 (edition 2018)`() = stubOnlyResolve("""
+    //- dep-lib/lib.rs
+        pub struct Foo;
+    //- lib.rs
+        extern crate dep_lib_target as dep_lib;
+
+        fn foo() -> dep_lib::Foo { unimplemented!() }
+                            //^ dep-lib/lib.rs
+    """)
+
+    @MockEdition(CargoWorkspace.Edition.EDITION_2018)
+    fun `test extern crate item alias 2 (edition 2018)`() = stubOnlyResolve("""
+    //- dep-lib/lib.rs
+        pub struct Foo;
+    //- lib.rs
+        extern crate dep_lib_target as dep_lib;
+
+        fn foo() -> dep_lib_target::Foo { unimplemented!() }
+                                   //^ dep-lib/lib.rs
+    """)
+
+    @MockEdition(CargoWorkspace.Edition.EDITION_2018)
+    fun `test extern crate item alias with same name (edition 2018)`() = stubOnlyResolve("""
+    //- dep-lib/lib.rs
+        pub struct Foo;
+    //- lib.rs
+        extern crate dep_lib_target as dep_lib_target;
+
+        fn foo() -> dep_lib_target::Foo { unimplemented!() }
+                                   //^ dep-lib/lib.rs
+    """, ItemResolutionTestmarks.externCrateItemAliasWithSameName)
+
+    @MockEdition(CargoWorkspace.Edition.EDITION_2018)
+    fun `test extern crate in super chain (edition 2018)`() = stubOnlyResolve("""
+    //- dep-lib/lib.rs
+        pub struct Foo;
+    //- lib.rs
+        mod foo {
+            extern crate dep_lib_target;
+            use self::dep_lib_target::Foo;
+                                     //^ dep-lib/lib.rs
+        }
     """)
 }

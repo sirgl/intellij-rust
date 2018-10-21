@@ -17,6 +17,56 @@ class RsMacroExpansionTest : RsMacroExpansionTestBase() {
         fn bar() {}
     """)
 
+    fun `test ident 'self'`() = doTest("""
+        macro_rules! foo {
+            ($ i:ident) => (
+                use foo::{$ i};
+            )
+        }
+        foo! { self }
+    """, """
+        use foo::{self};
+    """)
+
+    fun `test ident 'super', 'crate'`() = doTest("""
+        macro_rules! foo {
+            ($ i:ident) => (
+                use $ i::foo;
+            )
+        }
+        foo! { super }
+        foo! { crate }
+    """, """
+        use super::foo;
+    """, """
+        use crate::foo;
+    """)
+
+    fun `test ident 'Self'`() = doTest("""
+        macro_rules! foo {
+            ($ i:ident) => (
+                impl S { fn foo() -> $ i { S } }
+            )
+        }
+        foo! { Self }
+    """, """
+        impl S { fn foo() -> Self { S } }
+    """)
+
+    // This test doesn't check result of '$crate' expansion because it's implementation detail.
+    // For example rustc expands '$crate' to synthetic token without text representation
+    fun `test '$crate' metavar is matched as identifier`() = doTest("""
+        macro_rules! foo {
+            () => { bar!($ crate); } // $ crate consumed as a single identifier by `bar`
+        }
+        macro_rules! bar {
+            ($ i:ident) => { mod a {} }
+        }
+        foo! {}
+    """, """
+        mod a {}
+    """)
+
     fun `test path`() = doTest("""
         macro_rules! foo {
             ($ i:path) => {
@@ -127,18 +177,6 @@ class RsMacroExpansionTest : RsMacroExpansionTestBase() {
         foo! { fn foo() {} }
     """, """
         fn foo() {}
-    """)
-
-    fun `test 'crate' metavar`() = doTest("""
-        #[macro_use]
-        mod a {
-            macro_rules! foo {
-                ($ i:ident) => { fn $ i() { let a = $ crate::foo; } }
-            }
-        }
-        foo! { foo }
-    """, """
-        fn foo() { let a = ::a::foo; }
     """)
 
     fun `test empty group`() = doTest(MacroExpansionMarks.groupInputEnd1, """
@@ -345,6 +383,23 @@ class RsMacroExpansionTest : RsMacroExpansionTestBase() {
         struct Bar;
     """ to MacroExpansionMarks.failMatchPatternByExtraInput)
 
+    fun `test match * vs + group pattern`() = doTest("""
+        macro_rules! foo {
+            ($ ($ i:ident)+) => (
+                mod plus_matched {}
+            );
+            ($ ($ i:ident)*) => (
+                mod asterisk_matched {}
+            );
+        }
+        foo! {  }
+        foo! { foo }
+    """, """
+        mod asterisk_matched {}
+    """ to MacroExpansionMarks.failMatchGroupTooFewElements, """
+        mod plus_matched {}
+    """ to null)
+
     fun `test group pattern with collapsed token as a separator`() = doTest("""
         macro_rules! foo {
             ($ ($ i:ident)&&*) => ($ (
@@ -474,7 +529,7 @@ class RsMacroExpansionTest : RsMacroExpansionTestBase() {
          fn foo() {}
     """)
 
-    fun `test impl members`() = checkSingleMacro("""
+    fun `test impl members context`() = checkSingleMacro("""
         macro_rules! foo {
             () => {
                 fn foo() {}
@@ -491,5 +546,43 @@ class RsMacroExpansionTest : RsMacroExpansionTestBase() {
         fn foo() {}
         type Bar = u8;
         const BAZ: u8 = 0;
+    """)
+
+    fun `test pattern context`() = checkSingleMacro("""
+        macro_rules! foo {
+            ($ i:ident, $ j:ident) => {
+                ($ i, $ j)
+            }
+        }
+
+        fn main() {
+            let (foo!(a, b), c) = ((1, 2), 3);
+        }      //^
+    """, """
+        (a, b)
+    """)
+
+    fun `test type context`() = checkSingleMacro("""
+        macro_rules! foo {
+            ($ i:ident, $ j:ident) => {
+                $ i<$ j>
+            }
+        }
+
+        fn bar() -> foo!(Option, i32) { unimplemented!() }
+                  //^
+    """, """
+        Option<i32>
+    """)
+
+    fun `test expend macro definition`() = doTest("""
+       macro_rules! foo {
+           () => {
+               macro_rules! bar { () => {} }
+           }
+       }
+       foo!();
+    """, """
+        macro_rules! bar { () => {} }
     """)
 }

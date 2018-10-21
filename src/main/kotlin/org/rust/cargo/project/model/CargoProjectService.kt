@@ -11,9 +11,12 @@ import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.application.runWriteAction
 import com.intellij.openapi.components.service
 import com.intellij.openapi.project.Project
+import com.intellij.openapi.roots.ContentEntry
+import com.intellij.openapi.util.io.FileUtil
 import com.intellij.openapi.vfs.VirtualFile
 import com.intellij.util.messages.Topic
 import org.jetbrains.annotations.TestOnly
+import org.rust.cargo.CargoConstants
 import org.rust.cargo.project.settings.rustSettings
 import org.rust.cargo.project.workspace.CargoWorkspace
 import org.rust.cargo.toolchain.RustToolchain
@@ -31,9 +34,11 @@ import java.util.concurrent.TimeUnit
  * Cargo itself via `cargo metadata` command.
  */
 interface CargoProjectsService {
-    fun findProjectForFile(file: VirtualFile): CargoProject?
     val allProjects: Collection<CargoProject>
     val hasAtLeastOneValidProject: Boolean
+
+    fun findProjectForFile(file: VirtualFile): CargoProject?
+    fun findPackageForFile(file: VirtualFile): CargoWorkspace.Package?
 
     fun attachCargoProject(manifest: Path): Boolean
     fun detachCargoProject(cargoProject: CargoProject)
@@ -45,6 +50,9 @@ interface CargoProjectsService {
 
     @TestOnly
     fun setRustcInfo(rustcInfo: RustcInfo)
+
+    @TestOnly
+    fun setEdition(edition: CargoWorkspace.Edition)
 
     @TestOnly
     fun discoverAndRefreshSync(): List<CargoProject> {
@@ -139,4 +147,15 @@ private fun discoverToolchain(project: Project) {
         project.showBalloon("Using $tool", NotificationType.INFORMATION)
         project.cargoProjects.discoverAndRefresh()
     }
+}
+
+fun ContentEntry.setup(contentRoot: VirtualFile) {
+    val makeVfsUrl = { dirName: String -> FileUtil.join(contentRoot.url, dirName) }
+    CargoConstants.ProjectLayout.sources.map(makeVfsUrl).forEach {
+        addSourceFolder(it, /* test = */ false)
+    }
+    CargoConstants.ProjectLayout.tests.map(makeVfsUrl).forEach {
+        addSourceFolder(it, /* test = */ true)
+    }
+    addExcludeFolder(makeVfsUrl(CargoConstants.ProjectLayout.target))
 }

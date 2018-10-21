@@ -16,16 +16,21 @@ import org.jetbrains.annotations.TestOnly
 import org.rust.lang.core.psi.*
 import org.rust.lang.core.psi.ext.*
 import org.rust.lang.core.resolve.ImplLookup
-import org.rust.lang.core.resolve.Selection
 import org.rust.lang.core.resolve.SelectionResult
 import org.rust.lang.core.resolve.StdKnownItems
+import org.rust.lang.core.resolve.TraitImplSource
 import org.rust.lang.core.resolve.ref.*
 import org.rust.lang.core.stubs.RsStubLiteralType
 import org.rust.lang.core.types.*
+import org.rust.lang.core.types.infer.Adjustment.BorrowReference
+import org.rust.lang.core.types.infer.Adjustment.Deref
+import org.rust.lang.core.types.regions.Region
 import org.rust.lang.core.types.ty.*
 import org.rust.lang.core.types.ty.Mutability.IMMUTABLE
 import org.rust.lang.core.types.ty.Mutability.MUTABLE
 import org.rust.lang.utils.RsDiagnostic
+import org.rust.lang.utils.snapshot.CombinedSnapshot
+import org.rust.lang.utils.snapshot.Snapshot
 import org.rust.openapiext.Testmark
 import org.rust.openapiext.forEachChild
 import org.rust.openapiext.recursionGuard
@@ -42,6 +47,20 @@ fun inferTypesIn(element: RsInferenceContextOwner): RsInferenceResult {
 
 sealed class Adjustment(val target: Ty) {
     class Deref(target: Ty) : Adjustment(target)
+    class BorrowReference(
+        target: Ty,
+        val region: Region? = (target as? TyReference)?.region,
+        val mutability: Mutability? = (target as? TyReference)?.mutability
+    ) : Adjustment(target)
+
+    class BorrowPointer(target: Ty, val mutability: Mutability) : Adjustment(target)
+}
+
+interface RsInferenceData {
+    fun getExprAdjustments(expr: RsExpr): List<Adjustment>
+    fun getExprType(expr: RsExpr): Ty
+    fun getBindingType(binding: RsPatBinding): Ty
+    fun getResolvedPaths(expr: RsPathExpr): List<RsElement>
 }
 
 /**
@@ -52,23 +71,26 @@ class RsInferenceResult(
     private val bindings: Map<RsPatBinding, Ty>,
     private val exprTypes: Map<RsExpr, Ty>,
     private val resolvedPaths: Map<RsPathExpr, List<RsElement>>,
-    private val resolvedMethods: Map<RsMethodCall, List<RsFunction>>,
+    private val resolvedMethods: Map<RsMethodCall, List<MethodResolveVariant>>,
     private val resolvedFields: Map<RsFieldLookup, List<RsElement>>,
     val diagnostics: List<RsDiagnostic>,
     val adjustments: Map<RsExpr, List<Adjustment>>
-) {
+) : RsInferenceData {
     private val timestamp: Long = System.nanoTime()
 
-    fun getExprType(expr: RsExpr): Ty =
+    override fun getExprAdjustments(expr: RsExpr): List<Adjustment> =
+        adjustments[expr] ?: emptyList()
+
+    override fun getExprType(expr: RsExpr): Ty =
         exprTypes[expr] ?: TyUnknown
 
-    fun getBindingType(binding: RsPatBinding): Ty =
+    override fun getBindingType(binding: RsPatBinding): Ty =
         bindings[binding] ?: TyUnknown
 
-    fun getResolvedPath(expr: RsPathExpr): List<RsElement> =
+    override fun getResolvedPaths(expr: RsPathExpr): List<RsElement> =
         resolvedPaths[expr] ?: emptyList()
 
-    fun getResolvedMethod(call: RsMethodCall): List<RsFunction> =
+    fun getResolvedMethod(call: RsMethodCall): List<MethodResolveVariant> =
         resolvedMethods[call] ?: emptyList()
 
     fun getResolvedField(call: RsFieldLookup): List<RsElement> =
@@ -91,12 +113,12 @@ class RsInferenceResult(
 class RsInferenceContext(
     val lookup: ImplLookup,
     val items: StdKnownItems
-) {
+) : RsInferenceData {
     val fulfill: FulfillmentContext = FulfillmentContext(this, lookup)
     private val bindings: MutableMap<RsPatBinding, Ty> = HashMap()
     private val exprTypes: MutableMap<RsExpr, Ty> = HashMap()
     private val resolvedPaths: MutableMap<RsPathExpr, List<RsElement>> = HashMap()
-    private val resolvedMethods: MutableMap<RsMethodCall, List<RsFunction>> = HashMap()
+    private val resolvedMethods: MutableMap<RsMethodCall, List<MethodResolveVariant>> = HashMap()
     private val resolvedFields: MutableMap<RsFieldLookup, List<RsElement>> = HashMap()
     private val pathRefinements: MutableList<Pair<RsPathExpr, TraitRef>> = mutableListOf()
     private val methodRefinements: MutableList<Pair<RsMethodCall, TraitRef>> = mutableListOf()
@@ -107,11 +129,6 @@ class RsInferenceContext(
     private val floatUnificationTable: UnificationTable<TyInfer.FloatVar, TyFloat> = UnificationTable()
     private val varUnificationTable: UnificationTable<TyInfer.TyVar, Ty> = UnificationTable()
     private val projectionCache: ProjectionCache = ProjectionCache()
-
-    private class CombinedSnapshot(vararg val snapshots: Snapshot) : Snapshot {
-        override fun rollback() = snapshots.forEach { it.rollback() }
-        override fun commit() = snapshots.forEach { it.commit() }
-    }
 
     fun startSnapshot(): Snapshot = CombinedSnapshot(
         intUnificationTable.startSnapshot(),
@@ -176,27 +193,31 @@ class RsInferenceContext(
                 ?.let { resolvedPaths[path] = listOf(it) }
         }
         for ((call, traitRef) in methodRefinements) {
-            val fnName = resolvedMethods[call]?.firstOrNull()?.name
-            lookup.select(resolveTypeVarsIfPossible(traitRef)).ok()
-                ?.impl?.members?.functionList?.find { it.name == fnName }
-                ?.let { resolvedMethods[call] = listOf(it) }
+            val variant = resolvedMethods[call]?.firstOrNull() ?: continue
+            val impl = lookup.select(resolveTypeVarsIfPossible(traitRef)).ok()?.impl as? RsImplItem ?: continue
+            val fn = impl.members?.functionList?.find { it.name == variant.name } ?: continue
+            resolvedMethods[call] = listOf(variant.copy(element = fn, source = TraitImplSource.ExplicitImpl(impl)))
         }
     }
 
-    fun getExprType(expr: RsExpr): Ty {
+    override fun getExprAdjustments(expr: RsExpr): List<Adjustment> {
+        return adjustments[expr] ?: emptyList()
+    }
+
+    override fun getExprType(expr: RsExpr): Ty {
         return exprTypes[expr] ?: TyUnknown
+    }
+
+    override fun getBindingType(binding: RsPatBinding): Ty {
+        return bindings[binding] ?: TyUnknown
+    }
+
+    override fun getResolvedPaths(expr: RsPathExpr): List<RsElement> {
+        return resolvedPaths[expr] ?: emptyList()
     }
 
     fun isTypeInferred(expr: RsExpr): Boolean {
         return exprTypes.containsKey(expr)
-    }
-
-    fun getBindingType(binding: RsPatBinding): Ty {
-        return bindings[binding] ?: TyUnknown
-    }
-
-    fun getResolvedPaths(expr: RsPathExpr): List<RsElement> {
-        return resolvedPaths[expr] ?: emptyList()
     }
 
     fun writeExprTy(psi: RsExpr, ty: Ty) {
@@ -211,7 +232,7 @@ class RsInferenceContext(
         resolvedPaths[path] = resolved.map { it.element }
     }
 
-    fun writeResolvedMethod(call: RsMethodCall, resolvedTo: List<RsFunction>) {
+    fun writeResolvedMethod(call: RsMethodCall, resolvedTo: List<MethodResolveVariant>) {
         resolvedMethods[call] = resolvedTo
     }
 
@@ -627,11 +648,21 @@ class RsFnInferenceContext(
         is RsLetDecl -> {
             val explicitTy = psi.typeReference?.type
                 ?.let { normalizeAssociatedTypesIn(it) }
-            val inferredTy = explicitTy
-                ?.let { psi.expr?.inferTypeCoercableTo(it) }
-                ?: psi.expr?.inferType()
-                ?: TyInfer.TyVar()
-            psi.pat?.extractBindings(explicitTy ?: resolveTypeVarsWithObligations(inferredTy))
+            val expr = psi.expr
+            // We need to know type before coercion to correctly identify if expr is always diverging
+            // so we can't call `inferTypeCoercableTo` directly here
+            val (inferredTy, coercedInferredTy) = if (expr != null) {
+                val inferredTy = expr.inferType(explicitTy)
+                val coercedTy = if (explicitTy != null && coerce(expr, inferredTy, explicitTy)) {
+                    explicitTy
+                } else {
+                    inferredTy
+                }
+                inferredTy to coercedTy
+            } else {
+                TyUnknown to TyInfer.TyVar()
+            }
+            psi.pat?.extractBindings(explicitTy ?: resolveTypeVarsWithObligations(coercedInferredTy))
             inferredTy == TyNever
         }
         is RsExprStmt -> psi.expr.inferType() == TyNever
@@ -678,19 +709,18 @@ class RsFnInferenceContext(
 
     private fun RsExpr.inferTypeCoercableTo(expected: Ty): Ty {
         val inferred = inferType(expected)
-        coerce(this, inferred, expected)
-        return inferred
+        return if (coerce(this, inferred, expected)) expected else inferred
     }
 
     @JvmName("inferTypeCoercableTo_")
     fun inferTypeCoercableTo(expr: RsExpr, expected: Ty): Ty =
         expr.inferTypeCoercableTo(expected)
 
-    private fun coerce(expr: RsExpr, inferred: Ty, expected: Ty) {
-        coerceResolved(expr, resolveTypeVarsWithObligations(inferred), resolveTypeVarsWithObligations(expected))
+    private fun coerce(expr: RsExpr, inferred: Ty, expected: Ty): Boolean {
+        return coerceResolved(expr, resolveTypeVarsWithObligations(inferred), resolveTypeVarsWithObligations(expected))
     }
 
-    private fun coerceResolved(expr: RsExpr, inferred: Ty, expected: Ty) {
+    private fun coerceResolved(expr: RsExpr, inferred: Ty, expected: Ty): Boolean {
         val ok = tryCoerce(inferred, expected)
         if (!ok) {
             // ignoring possible false-positives (it's only basic experimental type checking)
@@ -711,31 +741,32 @@ class RsFnInferenceContext(
                 }
             }
         }
+        return ok
     }
 
     private fun tryCoerce(inferred: Ty, expected: Ty): Boolean {
         return when {
-        // Coerce array to slice
+            // Coerce array to slice
             inferred is TyReference && inferred.referenced is TyArray &&
                 expected is TyReference && expected.referenced is TySlice -> {
                 ctx.combineTypes(inferred.referenced.base, expected.referenced.elementType)
             }
-        // Coerce reference to pointer
+            // Coerce reference to pointer
             inferred is TyReference && expected is TyPointer &&
                 coerceMutability(inferred.mutability, expected.mutability) -> {
                 ctx.combineTypes(inferred.referenced, expected.referenced)
             }
-        // Coerce mutable pointer to const pointer
+            // Coerce mutable pointer to const pointer
             inferred is TyPointer && inferred.mutability.isMut
                 && expected is TyPointer && !expected.mutability.isMut -> {
                 ctx.combineTypes(inferred.referenced, expected.referenced)
             }
-        // Coerce references
+            // Coerce references
             inferred is TyReference && expected is TyReference &&
                 coerceMutability(inferred.mutability, expected.mutability) -> {
                 coerceReference(inferred, expected)
             }
-        // TODO trait object unsizing
+            // TODO trait object unsizing
             else -> ctx.combineTypes(inferred, expected)
         }
     }
@@ -790,24 +821,25 @@ class RsFnInferenceContext(
     private fun inferPathExprType(expr: RsPathExpr): Ty {
         val variants = resolvePath(expr.path, lookup).mapNotNull { it.downcast<RsNamedElement>() }
         ctx.writePath(expr, variants)
+        val fnVariants = variants.mapNotNull { it.downcast<RsFunction>() }
         val qualifier = expr.path.path
-        if (variants.size > 1 && qualifier != null) {
-            val resolved = collapseToTrait(variants.map { it.element })
+        if (variants.size > 1 && fnVariants.size == variants.size && qualifier != null) {
+            val resolved = collapseToTrait(fnVariants.map { it.element })
             if (resolved != null) {
-                // TODO remap subst
-                return instantiatePath(BoundElement(resolved, variants.first().subst), expr, tryRefinePath = true)
+                val subst = collapseSubst(resolved, fnVariants)
+                return instantiatePath(BoundElement(resolved, subst), expr, tryRefinePath = true)
             }
         }
-        val first = variants.firstOrNull() ?: return TyUnknown
+        val first = variants.singleOrNull() ?: return TyUnknown
         return instantiatePath(first, expr, tryRefinePath = variants.size == 1)
     }
 
     /** This works for `String::from` where multiple impls of `From` trait found for `String` */
-    private fun collapseToTrait(elements: List<RsNamedElement>): RsFunction? {
+    private fun collapseToTrait(elements: List<RsFunction>): RsFunction? {
         if (elements.size <= 1) return null
 
         val traits = elements.mapNotNull {
-            val owner = (it as? RsFunction)?.owner
+            val owner = it.owner
             when (owner) {
                 is RsAbstractableOwner.Impl -> owner.impl.traitRef?.resolveToTrait
                 is RsAbstractableOwner.Trait -> owner.trait
@@ -822,6 +854,22 @@ class RsFnInferenceContext(
         }
 
         return null
+    }
+
+    /** See test `test type arguments remap on collapse to trait` */
+    private fun collapseSubst(parentFn: RsFunction, variants: List<BoundElement<RsFunction>>): Substitution {
+        //TODO remap lifetimes
+        val collapsed = mutableMapOf<TyTypeParameter, Ty>()
+        val generics = parentFn.generics
+        for (fn in variants) {
+            for ((key, newValue) in generics.zip(fn.positionalTypeArguments)) {
+                collapsed.compute(key) { key, oldValue ->
+                    if (oldValue == null || oldValue == newValue) newValue else TyInfer.TyVar(key)
+                }
+            }
+        }
+        variants.first().subst[TyTypeParameter.self()]?.let { collapsed[TyTypeParameter.self()] = it }
+        return collapsed.toTypeSubst()
     }
 
     private fun instantiatePath(
@@ -962,10 +1010,19 @@ class RsFnInferenceContext(
     }
 
     private fun inferStructTypeArguments(literal: RsStructLiteral, typeParameters: Substitution) {
-        literal.structLiteralBody.structLiteralFieldList.mapNotNull { field ->
-            field.expr?.let { expr ->
-                val fieldType = field.type
-                expr.inferTypeCoercableTo(fieldType.substitute(typeParameters))
+        literal.structLiteralBody.structLiteralFieldList.filterNotNull().forEach { field ->
+            val fieldType = field.type.substitute(typeParameters)
+            val expr = field.expr
+
+            if (expr != null) {
+                expr.inferTypeCoercableTo(fieldType)
+            } else {
+                // Handle struct field shorthand by looking up the matching declaration in scope.
+                RsCodeFragmentFactory(field.project).createPath(field.referenceName, field)?.let { path ->
+                    val local = resolvePath(path, lookup).singleOrNull()?.element
+                    val ty = (local as? RsPatBinding)?.let { ctx.getBindingType(it) } ?: TyUnknown
+                    tryCoerce(ty, fieldType)
+                }
             }
         }
     }
@@ -1008,7 +1065,7 @@ class RsFnInferenceContext(
             val variants = resolveMethodCallReferenceWithReceiverType(lookup, receiver, methodCall)
             val callee = pickSingleMethod(receiver, variants, methodCall)
             // If we failed to resolve ambiguity just write the all possible methods
-            val variantsForDisplay = (callee?.let(::listOf) ?: variants).map { it.element }
+            val variantsForDisplay = (callee?.let(::listOf) ?: variants)
             ctx.writeResolvedMethod(methodCall, variantsForDisplay)
 
             callee ?: variants.firstOrNull()
@@ -1019,7 +1076,7 @@ class RsFnInferenceContext(
             return methodType.retType
         }
 
-        val impl = callee.impl
+        val impl = callee.source.impl
         var typeParameters = if (impl != null) {
             val typeParameters = instantiateBounds(impl)
             impl.typeReference?.type?.substitute(typeParameters)?.let { ctx.combineTypes(callee.selfTy, it) }
@@ -1034,7 +1091,7 @@ class RsFnInferenceContext(
             // Method path refinement needed if there are multiple impls of the same trait to the same type
             val trait = (callee.element.owner as RsAbstractableOwner.Trait).trait
             when (callee.selfTy) {
-            // All these branches except `else` are optimization, they can be removed without loss of functionality
+                // All these branches except `else` are optimization, they can be removed without loss of functionality
                 is TyTypeParameter -> callee.selfTy.getTraitBoundsTransitively()
                     .find { it.element == trait }?.subst ?: emptySubstitution
                 is TyAnon -> callee.selfTy.getTraitBoundsTransitively()
@@ -1052,6 +1109,13 @@ class RsFnInferenceContext(
                 }
             }
         }
+        // TODO: borrow adjustments for self parameter
+        /*
+        if (callee.selfTy is TyReference) {
+            val adjustment = BorrowReference( callee.selfTy)
+            ctx.addAdjustment(methodCall.receiver, adjustment)
+        }
+        */
 
         typeParameters = instantiateBounds(callee.element, callee.selfTy, typeParameters)
 
@@ -1083,12 +1147,13 @@ class RsFnInferenceContext(
         val filtered = variants.singleOrFilter {
             // 1. filter traits that are not imported
             TypeInferenceMarks.methodPickTraitScope.hit()
-            val trait = it.impl?.traitRef?.path?.reference?.resolve() as? RsTraitItem ?: return@singleOrFilter true
+            val trait = it.source.impl?.traitRef?.path?.reference?.resolve() as? RsTraitItem
+                ?: return@singleOrFilter true
             lookup.isTraitVisibleFrom(trait, methodCall)
         }.singleOrFilter { callee ->
             // 2. Filter methods by trait bounds (try to select all obligations for each impl)
             TypeInferenceMarks.methodPickCheckBounds.hit()
-            val impl = callee.impl ?: return@singleOrFilter true
+            val impl = callee.source.impl ?: return@singleOrFilter true
             ctx.canEvaluateBounds(impl, callee.selfTy)
         }.singleOrLet { list ->
             // 3. Pick results matching receiver type
@@ -1121,9 +1186,15 @@ class RsFnInferenceContext(
                 // We want to collapse them to the single function defined in the trait.
                 // Specific impl will be selected later according to the method parameter type.
                 val first = filtered.first()
-                collapseToTrait(filtered.map { it.element })?.let {
+                collapseToTrait(filtered.map { it.element })?.let { fn ->
                     TypeInferenceMarks.methodPickCollapseTraits.hit()
-                    MethodResolveVariant(first.name, it, null, first.selfTy, first.derefCount)
+                    MethodResolveVariant(
+                        first.name,
+                        fn,
+                        first.selfTy,
+                        first.derefCount,
+                        TraitImplSource.Collapsed((fn.owner as RsAbstractableOwner.Trait).trait)
+                    )
                 }
             }
         }
@@ -1163,15 +1234,16 @@ class RsFnInferenceContext(
         ctx.writeResolvedField(fieldLookup, variants.map { it.element })
         val field = variants.firstOrNull()
         if (field == null) {
-            for (type in lookup.coercionSequence(receiver)) {
+            for ((index, type) in lookup.coercionSequence(receiver).withIndex()) {
                 if (type is TyTuple) {
+                    ctx.addAdjustment(fieldLookup.parentDotExpr.expr, Deref(receiver), index)
                     val fieldIndex = fieldLookup.integerLiteral?.text?.toIntOrNull() ?: return TyUnknown
                     return type.types.getOrElse(fieldIndex) { TyUnknown }
                 }
             }
             return TyUnknown
         }
-        ctx.addAdjustment(fieldLookup.parentDotExpr.expr, Adjustment.Deref(receiver), field.derefCount)
+        ctx.addAdjustment(fieldLookup.parentDotExpr.expr, Deref(receiver), field.derefCount)
 
         val fieldElement = field.element
 
@@ -1258,7 +1330,7 @@ class RsFnInferenceContext(
                 // expectation must NOT be used for deref
                 val base = resolveTypeVarsWithObligations(innerExpr.inferType())
                 val deref = lookup.deref(base)
-                if (deref == null) {
+                if (deref == null && base != TyUnknown) {
                     ctx.addDiagnostic(RsDiagnostic.DerefError(expr, base))
                 }
                 deref ?: TyUnknown
@@ -1294,14 +1366,26 @@ class RsFnInferenceContext(
             is BoolOp -> {
                 if (op is OverloadableBinaryOperator) {
                     val rhsType = resolveTypeVarsWithObligations(expr.right?.inferType() ?: TyUnknown)
+
                     run {
                         // TODO replace it via `selectOverloadedOp` and share the code with `AssignmentOp`
                         // branch when cmp ops will become a real lang items in std
                         val trait = items.findCoreItem("cmp::${op.traitName}") as? RsTraitItem
-                            ?: return@run SelectionResult.Err<Selection>()
+                            ?: return@run null
 
-                        lookup.select(TraitRef(lhsType, trait.withSubst(rhsType)))
-                    }.ok()?.nestedObligations?.forEach(fulfill::registerPredicateObligation)
+                        val boundTrait = trait.withSubst(rhsType)
+                        val selection = lookup.select(TraitRef(lhsType, boundTrait)).ok()
+
+                        if (!isPrimitiveOrInferPrimitive(lhsType)) {
+                            val lhsAdjustment = BorrowReference(TyReference(lhsType, IMMUTABLE))
+                            ctx.addAdjustment(expr.left, lhsAdjustment)
+
+                            val rhsAdjustment = BorrowReference(TyReference(rhsType, IMMUTABLE))
+                            expr.right?.let { ctx.addAdjustment(it, rhsAdjustment) }
+                        }
+
+                        selection
+                    }?.nestedObligations?.forEach(fulfill::registerPredicateObligation)
                 } else {
                     expr.right?.inferTypeCoercableTo(lhsType)
                 }
@@ -1314,8 +1398,14 @@ class RsFnInferenceContext(
             is AssignmentOp -> {
                 if (op is OverloadableBinaryOperator) {
                     val rhsType = resolveTypeVarsWithObligations(expr.right?.inferType() ?: TyUnknown)
-                    lookup.selectOverloadedOp(lhsType, rhsType, op).ok()
-                        ?.nestedObligations?.forEach(fulfill::registerPredicateObligation)
+                    val selection = lookup.selectOverloadedOp(lhsType, rhsType, op).ok()
+
+                    if (!isPrimitiveOrInferPrimitive(lhsType)) {
+                        val lhsAdjustment = BorrowReference(TyReference(lhsType, MUTABLE))
+                        ctx.addAdjustment(expr.left, lhsAdjustment)
+                    }
+
+                    selection?.nestedObligations?.forEach(fulfill::registerPredicateObligation)
                 } else {
                     expr.right?.inferTypeCoercableTo(lhsType)
                 }
@@ -1323,6 +1413,9 @@ class RsFnInferenceContext(
             }
         }
     }
+
+    private fun isPrimitiveOrInferPrimitive(lhsType: Ty) =
+        lhsType is TyPrimitive || lhsType is TyInfer.IntVar || lhsType is TyInfer.FloatVar
 
     private fun inferTryExprType(expr: RsTryExpr): Ty =
         inferTryExprOrMacroType(expr.expr, allowOption = true)
@@ -1377,24 +1470,33 @@ class RsFnInferenceContext(
         fun isArrayToSlice(prevType: Ty?, type: Ty?): Boolean =
             prevType is TyArray && type is TySlice
 
-        val containerType = expr.containerExpr?.inferType() ?: return TyUnknown
-        val indexType = ctx.resolveTypeVarsIfPossible(expr.indexExpr?.inferType() ?: return TyUnknown)
+        val containerExpr = expr.containerExpr ?: return TyUnknown
+        val indexExpr = expr.indexExpr ?: return TyUnknown
+
+        val containerType = containerExpr.inferType()
+        val indexType = ctx.resolveTypeVarsIfPossible(indexExpr.inferType())
+
+        if (indexType is TyReference) {
+            ctx.addAdjustment(indexExpr, BorrowReference(indexType)) // TODO
+        }
 
         var derefCount = -1 // starts with -1 because the fist element of the coercion sequence is the type itself
         var prevType: Ty? = null
+        var result: Ty = TyUnknown
         for (type in lookup.coercionSequence(containerType)) {
             if (!isArrayToSlice(prevType, type)) derefCount++
 
             val outputType = lookup.findIndexOutputType(type, indexType)
             if (outputType != null) {
-                expr.containerExpr?.let { ctx.addAdjustment(it, Adjustment.Deref(containerType), derefCount) }
-                return outputType.register()
+                result = outputType.register()
+                break
             }
 
             prevType = type
         }
 
-        return TyUnknown
+        ctx.addAdjustment(containerExpr, Deref(containerType), derefCount)
+        return result
     }
 
     private fun inferMacroExprType(expr: RsMacroExpr): Ty {
@@ -1413,7 +1515,7 @@ class RsFnInferenceContext(
             } else {
                 // vec![value1, value2, value3]
                 val elementTypes = vecArg.exprList.map { ctx.getExprType(it) }
-                getMoreCompleteType(elementTypes)
+                if (elementTypes.isNotEmpty()) getMoreCompleteType(elementTypes) else TyInfer.TyVar()
             }
             return items.findVecForElementTy(elementType)
         }
@@ -1497,8 +1599,12 @@ class RsFnInferenceContext(
 
             // '!!' is safe here because we've just checked that elementTypes isn't null
             val elementType = getMoreCompleteType(elementTypes!!)
-            if (expectedElemTy != null) tryCoerce(elementType, expectedElemTy)
-            elementType to elementTypes.size.toLong()
+            val inferredTy = if (expectedElemTy != null && tryCoerce(elementType, expectedElemTy)) {
+                expectedElemTy
+            } else {
+                elementType
+            }
+            inferredTy to elementTypes.size.toLong()
         }
 
         return TyArray(elementType, size)

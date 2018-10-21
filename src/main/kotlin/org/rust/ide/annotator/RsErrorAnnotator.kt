@@ -12,14 +12,17 @@ import com.intellij.lang.annotation.Annotator
 import com.intellij.openapi.util.Key
 import com.intellij.psi.PsiElement
 import com.intellij.psi.PsiFile
+import org.rust.cargo.project.workspace.CargoWorkspace.Edition
 import org.rust.cargo.project.workspace.PackageOrigin
 import org.rust.cargo.toolchain.RustChannel
 import org.rust.ide.annotator.fixes.AddFeatureAttributeFix
 import org.rust.ide.annotator.fixes.AddModuleFileFix
 import org.rust.ide.annotator.fixes.AddTurbofishFix
+import org.rust.lang.core.CRATE_IN_PATHS
 import org.rust.lang.core.CRATE_VISIBILITY_MODIFIER
 import org.rust.lang.core.CompilerFeature
-import org.rust.lang.core.FeatureState.*
+import org.rust.lang.core.FeatureState.ACCEPTED
+import org.rust.lang.core.FeatureState.ACTIVE
 import org.rust.lang.core.psi.*
 import org.rust.lang.core.psi.ext.*
 import org.rust.lang.core.resolve.Namespace
@@ -66,9 +69,18 @@ class RsErrorAnnotator : Annotator, HighlightRangeExtension {
             override fun visitDotExpr(o: RsDotExpr) = checkDotExpr(holder, o)
             override fun visitArrayType(o: RsArrayType) = collectDiagnostics(holder, o)
             override fun visitVariantDiscriminant(o: RsVariantDiscriminant) = collectDiagnostics(holder, o)
+            override fun visitPolybound(o: RsPolybound) = checkPolybound(holder, o)
+            override fun visitTraitRef(o: RsTraitRef) = checkTraitRef(holder, o)
         }
 
         element.accept(visitor)
+    }
+
+    private fun checkTraitRef(holder: AnnotationHolder, o: RsTraitRef) {
+        val item = o.path.reference.resolve() as? RsItemElement ?: return
+        if (item !is RsTraitItem) {
+            RsDiagnostic.NotTraitError(o, item).addToHolder(holder)
+        }
     }
 
     private fun checkDotExpr(holder: AnnotationHolder, o: RsDotExpr) {
@@ -78,21 +90,8 @@ class RsErrorAnnotator : Annotator, HighlightRangeExtension {
 
     private fun checkReferenceIsPublic(ref: RsReferenceElement, o: PsiElement, holder: AnnotationHolder) {
         val element = ref.reference.resolve() as? RsVisible ?: return
-        if (element.isPublic) return
-        val elementMod = (if (element is RsMod) element.`super` else element.contextStrict()) ?: return
         val oMod = o.contextStrict<RsMod>() ?: return
-        // We have access to any item in any super module of `oMod`
-        // Note: `oMod.superMods` contains `oMod`
-        if (oMod.superMods.contains(elementMod)) return
-
-        val members = element.parent as? RsMembers
-        if (members != null) {
-            val parent = members.context ?: return
-            when (parent) {
-                is RsImplItem -> if (parent.traitRef != null) return
-                is RsTraitItem -> return
-            }
-        }
+        if (element.isVisibleFrom(oMod)) return
 
         val error = when {
             element is RsFieldDecl -> {
@@ -180,13 +179,14 @@ class RsErrorAnnotator : Annotator, HighlightRangeExtension {
     }
 
     private fun checkPath(holder: AnnotationHolder, path: RsPath) {
-        val child = path.path
-        if ((child == null || isValidSelfSuperPrefix(child)) && !isValidSelfSuperPrefix(path)) {
+        val qualifier = path.path
+        if ((qualifier == null || isValidSelfSuperPrefix(qualifier)) && !isValidSelfSuperPrefix(path)) {
             holder.createErrorAnnotation(path, "Invalid path: self and super are allowed only at the beginning")
             return
         }
 
-        if (path.self != null && path.parent !is RsPath && path.parent !is RsUseSpeck) {
+        val parent = path.parent
+        if (path.self != null && parent !is RsPath && parent !is RsUseSpeck) {
             val function = path.ancestorStrict<RsFunction>()
             if (function == null) {
                 holder.createErrorAnnotation(path, "self value is not available in this context")
@@ -197,6 +197,19 @@ class RsErrorAnnotator : Annotator, HighlightRangeExtension {
                 RsDiagnostic.SelfInStaticMethodError(path, function).addToHolder(holder)
             }
         }
+
+        val crate = path.crate
+        val useSpeck = path.ancestorStrict<RsUseSpeck>()
+        val edition = path.containingCargoTarget?.edition
+
+        if (crate != null) {
+            if (qualifier != null || useSpeck != null && useSpeck.qualifier != null) {
+                RsDiagnostic.UndeclaredTypeOrModule(crate).addToHolder(holder)
+            } else if (edition == Edition.EDITION_2015) {
+                checkFeature(holder, crate, CRATE_IN_PATHS, "`crate` in paths")
+            }
+        }
+
         checkReferenceIsPublic(path, path, holder)
     }
 
@@ -303,8 +316,8 @@ class RsErrorAnnotator : Annotator, HighlightRangeExtension {
         val traitName = trait.name ?: return
 
         fun mayDangleOnTypeOrLifetimeParameters(impl: RsImplItem): Boolean {
-            return impl.typeParameters.any() { it.queryAttributes.hasAtomAttribute("may_dangle") } ||
-                impl.lifetimeParameters.any() { it.queryAttributes.hasAtomAttribute("may_dangle") }
+            return impl.typeParameters.any { it.queryAttributes.hasAtomAttribute("may_dangle") } ||
+                impl.lifetimeParameters.any { it.queryAttributes.hasAtomAttribute("may_dangle") }
         }
 
         val attrRequiringUnsafeImpl = if (mayDangleOnTypeOrLifetimeParameters(impl)) "may_dangle" else null
@@ -413,6 +426,12 @@ class RsErrorAnnotator : Annotator, HighlightRangeExtension {
     private fun checkExternCrate(holder: AnnotationHolder, el: RsExternCrateItem) {
         if (el.reference.multiResolve().isNotEmpty() || el.containingCargoPackage?.origin != PackageOrigin.WORKSPACE) return
         RsDiagnostic.CrateNotFoundError(el, el.identifier.text).addToHolder(holder)
+    }
+
+    private fun checkPolybound(holder: AnnotationHolder, o: RsPolybound) {
+        if (o.lparen != null && o.bound.lifetime != null) {
+            holder.createErrorAnnotation(o, "Parenthesized lifetime bounds are not supported")
+        }
     }
 
     private fun isInTraitImpl(o: RsVis): Boolean {

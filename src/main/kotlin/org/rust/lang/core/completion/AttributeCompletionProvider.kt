@@ -33,10 +33,14 @@ import org.rust.lang.core.RsPsiPattern.onStruct
 import org.rust.lang.core.RsPsiPattern.onTestFn
 import org.rust.lang.core.RsPsiPattern.onTrait
 import org.rust.lang.core.RsPsiPattern.onTupleStruct
-import org.rust.lang.core.psi.*
+import org.rust.lang.core.or
+import org.rust.lang.core.psi.RsInnerAttr
+import org.rust.lang.core.psi.RsMetaItem
+import org.rust.lang.core.psi.RsOuterAttr
 import org.rust.lang.core.psi.ext.RsDocAndAttributeOwner
 import org.rust.lang.core.psi.ext.name
 import org.rust.lang.core.psi.ext.queryAttributes
+import org.rust.lang.core.psiElement
 
 object AttributeCompletionProvider : CompletionProvider<CompletionParameters>() {
 
@@ -62,7 +66,7 @@ object AttributeCompletionProvider : CompletionProvider<CompletionParameters>() 
     ).flatMap { entry -> entry.value.split(' ').map { attrName -> RustAttribute(attrName, entry.key) } }
 
     override fun addCompletions(parameters: CompletionParameters,
-                                context: ProcessingContext?,
+                                context: ProcessingContext,
                                 result: CompletionResultSet) {
 
         val elem = parameters.position.parent?.parent?.parent

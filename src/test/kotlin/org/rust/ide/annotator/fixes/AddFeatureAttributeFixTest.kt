@@ -5,8 +5,8 @@
 
 package org.rust.ide.annotator.fixes
 
+import org.rust.MockRustcVersion
 import org.rust.ide.annotator.RsAnnotationTestBase
-import org.rust.lang.MockRustcVersion
 
 class AddFeatureAttributeFixTest : RsAnnotationTestBase() {
 
@@ -37,4 +37,18 @@ class AddFeatureAttributeFixTest : RsAnnotationTestBase() {
 
             crate/*caret*/ type Foo = i128;
         """)
+
+    @MockRustcVersion("1.28.0")
+    fun `test add crate_in_paths feature is unavailable`() = checkFixIsUnavailable("Add `crate_in_paths` feature", """
+        use <error>crate/*caret*/</error>::foo::Foo;
+    """)
+
+    @MockRustcVersion("1.30.0-nightly")
+    fun `test add crate_in_paths feature`() = checkFixByText("Add `crate_in_paths` feature", """
+        use <error>crate/*caret*/</error>::foo::Foo;
+    """, """
+        #![feature(crate_in_paths)]
+
+        use crate/*caret*/::foo::Foo;
+    """)
 }

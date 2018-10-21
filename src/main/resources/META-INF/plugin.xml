@@ -9,8 +9,8 @@
     ]]></description>
 
     <change-notes><![CDATA[
-        <a href="https://intellij-rust.github.io/2018/07/24/changelog-79.html">
-                 https://intellij-rust.github.io/2018/07/24/changelog-79.html
+        <a href="https://intellij-rust.github.io/2018/10/10/changelog-84.html">
+                 https://intellij-rust.github.io/2018/10/10/changelog-84.html
     ]]>
     </change-notes>
 
@@ -64,7 +64,8 @@
         <postFormatProcessor implementation="org.rust.ide.formatter.processors.RsTrailingCommaFormatProcessor"/>
         <preFormatProcessor implementation="org.rust.ide.formatter.processors.RsMatchArmCommaFormatProcessor"/>
         <preFormatProcessor implementation="org.rust.ide.formatter.processors.RsStatementSemicolonFormatProcessor"/>
-        <preFormatProcessor implementation="org.rust.ide.formatter.processors.RsSingleImportRemoveBracesFormatProcessor"/>
+        <preFormatProcessor
+            implementation="org.rust.ide.formatter.processors.RsSingleImportRemoveBracesFormatProcessor"/>
 
         <!-- Refactoring support -->
 
@@ -127,8 +128,24 @@
 
         <codeInsight.typeInfo language="Rust" implementationClass="org.rust.ide.hints.RsExpressionTypeProvider"/>
         <codeInsight.parameterInfo language="Rust" implementationClass="org.rust.ide.hints.RsParameterInfoHandler"/>
+        <codeInsight.parameterInfo language="Rust" implementationClass="org.rust.ide.hints.RsGenericParameterInfoHandler"/>
         <codeInsight.parameterNameHints language="Rust"
                                         implementationClass="org.rust.ide.hints.RsInlayParameterHintsProvider"/>
+
+        <declarationRangeHandler key="org.rust.lang.core.psi.RsStructItem"
+                                 implementationClass="org.rust.ide.hints.RsStructItemDeclarationRangeHandler"/>
+        <declarationRangeHandler key="org.rust.lang.core.psi.RsTraitItem"
+                                 implementationClass="org.rust.ide.hints.RsTraitItemDeclarationRangeHandler"/>
+        <declarationRangeHandler key="org.rust.lang.core.psi.RsImplItem"
+                                 implementationClass="org.rust.ide.hints.RsImplItemDeclarationRangeHandler"/>
+        <declarationRangeHandler key="org.rust.lang.core.psi.RsEnumItem"
+                                 implementationClass="org.rust.ide.hints.RsEnumItemDeclarationRangeHandler"/>
+        <declarationRangeHandler key="org.rust.lang.core.psi.RsModItem"
+                                 implementationClass="org.rust.ide.hints.RsModItemDeclarationRangeHandler"/>
+        <declarationRangeHandler key="org.rust.lang.core.psi.RsFunction"
+                                 implementationClass="org.rust.ide.hints.RsFunctionDeclarationRangeHandler"/>
+        <declarationRangeHandler key="org.rust.lang.core.psi.RsMacro"
+                                 implementationClass="org.rust.ide.hints.RsMacroDeclarationRangeHandler"/>
 
         <!-- Annotator -->
 
@@ -172,6 +189,8 @@
 
         <psi.referenceContributor language="Rust"
                                   implementation="org.rust.lang.core.resolve.ref.RsMetaItemReferenceContributor"/>
+        <psi.referenceContributor language="Rust"
+                                  implementation="org.rust.lang.core.resolve.ref.RsLitExprReferenceContributor"/>
 
         <!-- Completion -->
 
@@ -203,11 +222,15 @@
                       id="RsAngleBraceTypedHandler"/>
         <typedHandler implementation="org.rust.ide.typing.RsDotTypedHandler"
                       id="RsDotTypedHandler"/>
+        <typedHandler implementation="org.rust.ide.typing.RsAttributeParenthesisTypedHandler"
+                      id="RsAttributeParenthesisTypedHandler"/>
 
         <backspaceHandlerDelegate implementation="org.rust.ide.typing.RsRawLiteralHashesDeleter"
                                   id="RsRawLiteralHashesDeleter"/>
         <backspaceHandlerDelegate implementation="org.rust.ide.typing.RsAngleBraceBackspaceHandler"
                                   id="RsAngleBraceBackspaceHandler"/>
+        <backspaceHandlerDelegate implementation="org.rust.ide.typing.RsAttributeParenthesisBackspaceHandler"
+                                  id="RsAttributeParenthesisBackspaceHandler"/>
 
         <joinLinesHandler implementation="org.rust.ide.actions.RsJoinLinesHandler"
                           id="RsJoinLinesHandler"/>
@@ -443,6 +466,11 @@
                          enabledByDefault="true" level="ERROR"
                          implementationClass="org.rust.ide.inspections.RsAssignToImmutableInspection"/>
 
+        <localInspection language="Rust" groupPath="Rust" groupName="Edition 2018"
+                         displayName="Anchored paths"
+                         enabledByDefault="false" level="ERROR"
+                         implementationClass="org.rust.ide.inspections.RsAnchoredPathsInspection"/>
+
         <localInspection language="Rust" groupName="Rust"
                          displayName="Match Check"
                          enabledByDefault="true" level="ERROR"
@@ -574,6 +602,18 @@
             <className>org.rust.ide.intentions.FlipBinaryExpressionIntention</className>
             <category>Rust</category>
         </intentionAction>
+        <intentionAction>
+            <className>org.rust.ide.intentions.SplitIfIntention</className>
+            <category>Rust</category>
+        </intentionAction>
+        <intentionAction>
+            <className>org.rust.ide.intentions.RsShowRecursiveMacroExpansionIntention</className>
+            <category>Rust</category>
+        </intentionAction>
+        <intentionAction>
+            <className>org.rust.ide.intentions.RsShowSingleStepMacroExpansionIntention</className>
+            <category>Rust</category>
+        </intentionAction>
 
         <!-- Run Configurations -->
 
@@ -587,9 +627,21 @@
 
         <!-- Cargo -->
 
-        <projectConfigurable instance="org.rust.cargo.project.configurable.RustProjectConfigurable"
+        <projectConfigurable instance="org.rust.cargo.project.configurable.RsProjectConfigurable"
                              displayName="Rust"
-                             groupId="language"/>
+                             groupId="language"
+                             id="language.rust"/>
+
+        <projectConfigurable instance="org.rust.cargo.project.configurable.CargoConfigurable"
+                             displayName="Cargo"
+                             parentId="language.rust"
+                             id="language.rust.cargo"/>
+
+        <projectConfigurable instance="org.rust.cargo.project.configurable.RustfmtConfigurable"
+                             displayName="Rustfmt"
+                             parentId="language.rust"
+                             id="language.rust.rustfmt"/>
+
         <projectService serviceInterface="org.rust.cargo.project.settings.RustProjectSettingsService"
                         serviceImplementation="org.rust.cargo.project.settings.impl.RustProjectSettingsServiceImpl"/>
         <projectService serviceInterface="org.rust.cargo.project.model.CargoProjectsService"
@@ -646,6 +698,7 @@
         <!--NB: order is important here-->
         <statementUpDownMover implementation="org.rust.ide.actions.mover.RsCommaListElementUpDownMover"/>
         <statementUpDownMover implementation="org.rust.ide.actions.mover.RsMatchArmUpDownMover"/>
+        <statementUpDownMover implementation="org.rust.ide.actions.mover.RsStatementUpDownMover"/>
         <statementUpDownMover implementation="org.rust.ide.actions.mover.RsItemUpDownMover"/>
 
 
@@ -711,7 +764,7 @@
 
         <action id="Rust.CargoFmtFile"
                 class="org.rust.ide.actions.RustfmtFileAction"
-                text="Reformat file with rustfmt"
+                text="Reformat File with Rustfmt"
                 description="Reformat current file with rustfmt">
             <add-to-group group-id="CodeMenu" anchor="last"/>
         </action>
@@ -739,6 +792,28 @@
                 icon="AllIcons.ToolbarDecorator.Remove"
                 use-shortcut-of="$Delete"/>
 
+        <action id="Rust.ShowSingleStepMacroExpansionAction"
+                class="org.rust.ide.actions.macroExpansion.RsShowSingleStepMacroExpansionAction"
+                text="Show expanded macro">
+        </action>
+        <action id="Rust.ShowRecursiveMacroExpansionAction"
+                class="org.rust.ide.actions.macroExpansion.RsShowRecursiveMacroExpansionAction"
+                text="Show recursively expanded macro">
+        </action>
+        <group id="Rust.MacroExpansionActions"
+               text="Show Macro Expansion"
+               class="org.rust.ide.actions.macroExpansion.RsShowMacroExpansionGroup">
+            <add-to-group group-id="EditorPopupMenu"/>
+            <separator/>
+            <reference id="Rust.ShowRecursiveMacroExpansionAction"/>
+            <reference id="Rust.ShowSingleStepMacroExpansionAction"/>
+        </group>
+
+        <action class="org.rust.lang.refactoring.generateConstructor.GenerateConstructorAction"
+                id="Rust.GenerateConstructor"
+                text="Generate Constructor">
+            <add-to-group group-id="GenerateGroup"/>
+        </action>
         <group id="Rust.Cargo">
             <reference id="Rust.RefreshCargoProject"/>
             <reference id="Rust.CargoCommand"/>
