@@ -8,7 +8,7 @@ import org.rust.lang.core.types.ty.Ty
 import org.rust.lang.core.types.ty.TyAdt
 import org.rust.lang.core.types.ty.TyTuple
 
-data class Pattern(val ty: Ty, val kind: PatternKind, val arm: RsMatchArm?) {
+data class Pattern(val ty: Ty, val kind: PatternKind) {
     override fun toString(): String {
         return when (kind) {
             PatternKind.Wild -> "_"
@@ -76,10 +76,10 @@ data class Pattern(val ty: Ty, val kind: PatternKind, val arm: RsMatchArm?) {
 
 typealias FieldPattern = Pair<Int, Pattern>
 
-fun lowerPattern(pat: RsPat, arm: RsMatchArm?): Pattern {
+fun lowerPattern(pat: RsPat): Pattern {
     println("<top>.lowerPattern(pat = $pat)")
     val kind = pat.kind
     val ty = pat.type
     println("<top>.lowerPattern ty=$ty, kind=$kind")
-    return Pattern(ty, kind, arm)
+    return Pattern(ty, kind)
 }

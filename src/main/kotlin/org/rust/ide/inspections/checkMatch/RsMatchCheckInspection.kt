@@ -29,18 +29,18 @@ class RsMatchCheckInspection : RsLocalInspectionTool() {
 fun checkUselessArm(match: RsMatchExpr, holder: ProblemsHolder) {
     println("<top>.checkUselessArm(match = $match, holder = $holder)")
     val matrix = match.matrix
-    for ((i, row) in matrix.withIndex()) {
+    for ((i, matchArm) in matrix.withIndex()) {
         if (i > 0) {
-            val useful = isUseful(matrix.subList(0, i).map { it.first }, row.first, false)
+            val useful = isUseful(matrix.subList(0, i).map { it.patterns }, matchArm.patterns, false)
             if (!useful.isUseful()) {
 //                val matchArm = match.matchBody?.matchArmList?.get(i) ?: continue
-                val matchArm = row.first.first().arm ?: continue
-                println("<top>.checkUselessArm arm ${matchArm.text} useless")
+                val arm = matchArm.arm ?: continue
+                println("<top>.checkUselessArm arm ${arm.text} useless")
                 holder.registerProblem(
-                    matchArm,
+                    arm,
                     "Useless match arm",
                     ProblemHighlightType.GENERIC_ERROR,
-                    SubstituteTextFix.delete("Remove useless arm", match.containingFile, matchArm.textRange)
+                    SubstituteTextFix.delete("Remove useless arm", match.containingFile, arm.textRange)
                 )
             }
         }
@@ -50,7 +50,7 @@ fun checkUselessArm(match: RsMatchExpr, holder: ProblemsHolder) {
 fun checkExhaustive(match: RsMatchExpr, holder: ProblemsHolder) {
     println("<top>.checkExhaustive(match = $match, holder = $holder)")
     val matrix = match.matrix
-    val useful = isUseful(matrix.map { it.first }, listOf(Pattern(TyUnknown, PatternKind.Wild, null)), true)
+    val useful = isUseful(matrix.map { it.patterns}, listOf(Pattern(TyUnknown, PatternKind.Wild)), true)
     when (useful) {
         is Usefulness.UsefulWithWitness -> {
             println("<top>.checkExhaustive useful=${useful.witness}")
@@ -106,7 +106,7 @@ fun isUseful(matrix: List<List<Pattern>?>, v: List<Pattern>, withWitness: Boolea
 
 
         val isPrivatelyEmpty = allConstructors.isEmpty()
-        val isDeclaredNonexhaustive = (type as? TyAdt)?.isNonExhaustiveEnum ?: false
+        val isDeclaredNonexhaustive = (type as? TyAdt)?.isMarkedNonExhaustive ?: false
         println("<top>.isUseful missing constructors $missingConstructor\tis privately empty $isPrivatelyEmpty, " +
             "is declared nonexhaustive $isDeclaredNonexhaustive")
 
@@ -132,7 +132,7 @@ fun isUseful(matrix: List<List<Pattern>?>, v: List<Pattern>, withWitness: Boolea
                 is Usefulness.UsefulWithWitness -> {
                     val newWitness = if (isNonExhaustive || usedConstructors.isEmpty()) {
                         res.witness.map { witness ->
-                            witness.patterns.add(Pattern(type, PatternKind.Wild, null))
+                            witness.patterns.add(Pattern(type, PatternKind.Wild))
                             witness
                         }
                     } else {
@@ -176,7 +176,7 @@ fun specializeRow(row: List<Pattern>?, constructor: Constructor, type: Ty): List
 
     val wildPatterns = mutableListOf<Pattern>()
     repeat(constructor.arity(type)) {
-        wildPatterns.add(Pattern(TyUnknown, PatternKind.Wild, null))
+        wildPatterns.add(Pattern(TyUnknown, PatternKind.Wild))
     }
 
     val pat = row[0]
@@ -314,7 +314,7 @@ fun sliceCoveredByConstructor(constructor: Constructor, prefix: List<Pattern>, s
 
 fun getLeafOrVariant(item: RsElement, subpatterns: List<FieldPattern>): PatternKind {
     return when (item) {
-        is RsEnumVariant -> PatternKind.Variant(TyAdt.valueOf(item.parentEnum), item.index, subpatterns)
+        is RsEnumVariant -> PatternKind.Variant(TyAdt.valueOf(item.parentEnum), item.index ?: error("Can't get index"), subpatterns)
         is RsStructItem -> PatternKind.Leaf(subpatterns)
         else -> error("Impossible case $item")
     }

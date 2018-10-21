@@ -11,7 +11,7 @@ class Witness(val patterns: MutableList<Pattern>) {
         val subPatterns = constructor.subTys(type)
         println("Witness.pushWildCtor subPatterns=$subPatterns")
         for (ty in subPatterns) {
-            patterns.add(Pattern(ty, PatternKind.Wild, null))
+            patterns.add(Pattern(ty, PatternKind.Wild))
         }
         applyConstructors(constructor, type)
     }
@@ -52,7 +52,7 @@ class Witness(val patterns: MutableList<Pattern>) {
             }
         }
         println("Witness.applyConstructors pat=$pat")
-        patterns.add(Pattern(type, pat, null))
+        patterns.add(Pattern(type, pat))
         println("Witness.applyConstructors patterns=$patterns")
     }
 }

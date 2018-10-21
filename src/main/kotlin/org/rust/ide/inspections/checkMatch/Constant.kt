@@ -4,7 +4,7 @@ import org.rust.lang.core.psi.RsPathExpr
 
 sealed class Constant {
     data class Boolean(val value: kotlin.Boolean) : Constant()
-    data class Integer(val value: Int) : Constant()
+    data class Integer(val value: Number) : Constant()
     data class Double(val value: kotlin.Double) : Constant()
     data class String(val value: kotlin.String) : Constant()
     data class Char(val value: kotlin.String) : Constant()
@@ -19,7 +19,7 @@ sealed class Constant {
                 this.value && !other.value -> 1
                 else -> -1
             }
-            this is Constant.Integer && other is Constant.Integer -> this.value.compareTo(other.value)
+            this is Constant.Integer && other is Constant.Integer -> this.value.toLong().compareTo(other.value.toLong())
 
             this is Constant.Double && other is Constant.Double -> this.value.compareTo(other.value)
 

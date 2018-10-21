@@ -1,5 +1,6 @@
 package org.rust.ide.inspections.checkMatch
 
+import com.intellij.openapi.diagnostic.logger
 import org.rust.lang.core.psi.RsEnumItem
 import org.rust.lang.core.psi.RsEnumVariant
 import org.rust.lang.core.psi.RsStructItem
@@ -26,17 +27,6 @@ sealed class Constructor {
     /// Array patterns of length n.
     data class Slice(val size: Int) : Constructor()
 
-    //    fun arity(type: Ty): Int {
-//        println("<top>.arity(type = $type)")
-//        return when (this) {
-//            is Constructor.Single -> type.size
-//            is Constructor.ConstantValue -> type.subTys().size
-//            is Constructor.Variant -> variant.size
-//
-//            is Constructor.ConstantRange -> TODO()
-//            is Constructor.Slice -> TODO()
-//        }
-//    }
     fun arity(type: Ty): Int = when (type) {
         is TyTuple -> type.types.size
         is TySlice, is TyArray -> when (this) {
@@ -90,12 +80,11 @@ sealed class Constructor {
                 when (this) {
                     is Constructor.Single -> TODO()
                     is Constructor.Variant -> {
-                        this.variant.tupleFields?.tupleFieldDeclList?.map { it.typeReference.type }
-                            ?: this.variant.blockFields?.fieldDeclList?.mapNotNull { it.typeReference?.type }
-                            ?: run {
-                                println("NOTHING IN SUB TYS")
-                                listOf<Ty>()
-                            }
+                        variant.tupleFields?.let {
+                            it.tupleFieldDeclList.map { it.typeReference.type }
+                        } ?: variant.blockFields?.let {
+                            it.fieldDeclList.mapNotNull { it.typeReference?.type }
+                        } ?: listOf()
                     }
                     else -> {
                         println("AAA NOTHING IN SUB TYS")
@@ -116,7 +105,7 @@ fun allConstructors(ty: Ty): List<Constructor> {
             Constructor.ConstantValue(Constant.Boolean(it))
         }
         ty is TyAdt && ty.item is RsEnumItem -> ty.item.enumBody?.enumVariantList?.map {
-            Constructor.Variant(it, it.index)
+            Constructor.Variant(it, it.index ?: error("Can't get index"))
         } ?: emptyList()
 
         ty is TyArray && ty.size != null -> TODO()

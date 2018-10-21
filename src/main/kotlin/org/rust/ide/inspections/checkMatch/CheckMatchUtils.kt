@@ -8,32 +8,34 @@ import org.rust.lang.core.types.ty.TyTuple
 import org.rust.lang.core.types.ty.TyUnknown
 import org.rust.lang.core.types.type
 
-val RsEnumVariant.index: Int
-    get() = parentEnum.enumBody?.enumVariantList?.indexOf(this) ?: -1
+internal val RsEnumVariant.index: Int?
+    get() = parentEnum.enumBody?.enumVariantList?.indexOf(this)
 
-val RsFieldsOwner.size: Int
+internal val RsFieldsOwner.size: Int
     get() = tupleFields?.tupleFieldDeclList?.size ?: blockFields?.fieldDeclList?.size ?: 0
 
-val List<List<*>?>.width: Int
-    get() = maxWith(Comparator.comparing<List<*>, Int> { it?.size ?: -1 })?.size ?: 0
+internal val List<List<*>?>.width: Int
+    get() = maxWith(Comparator.comparingInt { it?.size ?: -1 })?.size ?: 0
 
-val List<List<*>?>.height: Int
+internal val List<List<*>?>.height: Int
     get() = size
 
-val RsMatchExpr.matrix: List<Pair<List<Pattern>, RsMatchArmGuard?>>
+
+data class MatchArm(val patterns: List<Pattern>, val arm: RsMatchArm)
+internal val RsMatchExpr.matrix: List<MatchArm>
     get() = matchBody?.matchArmList?.flatMap { arm ->
-        arm.patList.map { listOf(lowerPattern(it, arm)) to arm.matchArmGuard }
+        arm.patList.map { MatchArm(listOf(lowerPattern(it)), arm) }
     } ?: emptyList()
 
 
-val TyAdt.isNonExhaustiveEnum: Boolean
+internal val TyAdt.isMarkedNonExhaustive: Boolean
     get() {
         val enum = item as? RsEnumItem ?: return false
         val attrList = enum.outerAttrList
         return attrList.any { it.metaItem.name == "non_exhaustive" }
     }
 
-val RsExpr.value: Constant
+internal val RsExpr.value: Constant
     get() {
         return when (this) {
             is RsLitExpr -> {
@@ -55,7 +57,7 @@ val RsExpr.value: Constant
         }
     }
 
-val Ty.size: Int
+internal val Ty.size: Int
     get() {
         println("<top>.Ty.size() ty=$this")
         return when (this) {
@@ -78,7 +80,7 @@ val Ty.size: Int
     }
 
 
-val RsPat.type: Ty
+internal val RsPat.type: Ty
     get() {
         return when (this) {
             is RsPatConst -> expr.type
@@ -112,7 +114,7 @@ val RsPat.type: Ty
         }
     }
 
-val RsPat.kind: PatternKind
+internal val RsPat.kind: PatternKind
     get() {
         println("<top>.RsPat.kind()")
         return when (this) {
@@ -127,7 +129,7 @@ val RsPat.kind: PatternKind
             is RsPatTup -> {
                 println("<top>.RsPat.kind() RsPatTup")
                 PatternKind.Leaf(this.patList.mapIndexed { i, pat ->
-                    i to lowerPattern(pat, null)
+                    i to lowerPattern(pat)
                 })
             }
             is RsPatStruct -> {
@@ -137,10 +139,10 @@ val RsPat.kind: PatternKind
                     val pat = patField.pat
                     val binding = patField.patBinding
                     val pattern = if (pat != null) {
-                        lowerPattern(pat, null)
+                        lowerPattern(pat)
                     } else {
                         binding?.type?.let { ty ->
-                            Pattern(ty, PatternKind.Binding(ty), null)
+                            Pattern(ty, PatternKind.Binding(ty))
                         } ?: error("Binding type = null")
                     }
                     (item as RsFieldsOwner).indexOf(patField) to pattern
@@ -152,7 +154,7 @@ val RsPat.kind: PatternKind
                 println("<top>.RsPat.kind() RsPatTupleStruct")
                 val item = path.reference.resolve() ?: error("Can't resolve ${path.text}")
                 val subpatterns: List<FieldPattern> = patList.mapIndexed { i, pat ->
-                    i to lowerPattern(pat, null) // TODO patIdent ok?
+                    i to lowerPattern(pat) // TODO patIdent ok?
                 }
 
                 getLeafOrVariant(item, subpatterns)
@@ -165,7 +167,7 @@ val RsPat.kind: PatternKind
                     if (ty.item is RsEnumItem) {
                         println("<top>.RsPat.kind() RsPatConst.expr it EnumVariant")
                         val variant = (expr as RsPathExpr).path.reference.resolve() as RsEnumVariant
-                        PatternKind.Variant(ty, variant.index, emptyList())
+                        PatternKind.Variant(ty, variant.index ?: error("Can't get index"), emptyList())
                     } else {
                         error("Unresolved constant")
                     }
@@ -190,28 +192,9 @@ val RsPat.kind: PatternKind
 
     }
 
-fun RsFieldsOwner.indexOf(pat: RsPatField): Int {
+internal fun RsFieldsOwner.indexOf(pat: RsPatField): Int {
     val identifier = pat.identifier
     return namedFields.map { it.identifier }.indexOfFirst {
         it.text == identifier?.text
     }
 }
-
-fun Ty.subTys(): List<Ty> {
-    println("<top>.subTys() ty=$this")
-    return when (this) {
-        is TyTuple -> {
-            println("<top>.subTys this is tuple subty=${this.types}")
-            this.types
-        }
-        is TyAdt -> {
-            println("<top>.subTys this is adt subty=$typeArguments")
-            this.typeArguments
-        }
-        else -> {
-            println("<top>.subTys this is something subty=${emptyList<Ty>()}")
-            emptyList()
-        }
-    }
-}
-
