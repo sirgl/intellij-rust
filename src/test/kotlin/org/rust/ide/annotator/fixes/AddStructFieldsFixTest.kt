@@ -6,12 +6,11 @@
 package org.rust.ide.annotator.fixes
 
 import org.intellij.lang.annotations.Language
+import org.rust.ProjectDescriptor
+import org.rust.WithStdlibRustProjectDescriptor
 import org.rust.ide.annotator.RsAnnotationTestBase
 
 class AddStructFieldsFixTest : RsAnnotationTestBase() {
-
-    override fun getProjectDescriptor() = WithStdlibRustProjectDescriptor
-
     fun `test no fields`() = checkBothQuickFix("""
         struct S { foo: i32, bar: f64 }
 
@@ -26,33 +25,51 @@ class AddStructFieldsFixTest : RsAnnotationTestBase() {
         }
     """)
 
+    fun `test aliased struct`() = checkBothQuickFix("""
+        struct S { foo: i32, bar: f64 }
+        type T = S;
+
+        fn main() {
+            let _ = <error>T</error> { /*caret*/ };
+        }
+    """, """
+        struct S { foo: i32, bar: f64 }
+        type T = S;
+
+        fn main() {
+            let _ = T { foo: /*caret*/0, bar: 0.0 };
+        }
+    """)
+
+    @ProjectDescriptor(WithStdlibRustProjectDescriptor::class)
     fun `test no comma`() = checkBothQuickFix("""
         struct S { a: i32, b: String }
 
         fn main() {
             <error>S</error> { a: 92/*caret*/};
         }
-        """, """
+    """, """
         struct S { a: i32, b: String }
 
         fn main() {
             S { a: 92, b: /*caret*/String::new() };
         }
-        """)
+    """)
 
+    @ProjectDescriptor(WithStdlibRustProjectDescriptor::class)
     fun `test with comma`() = checkBothQuickFix("""
         struct S { a: i32, b: String }
 
         fn main() {
             <error>S</error> { a: 92, /*caret*/};
         }
-        """, """
+    """, """
         struct S { a: i32, b: String }
 
         fn main() {
             S { a: 92, b: /*caret*/String::new() };
         }
-        """)
+    """)
 
     fun `test some existing fields`() = checkBothQuickFix("""
         struct S { a: i32, b: i32, c: i32, d: i32 }
@@ -71,7 +88,7 @@ class AddStructFieldsFixTest : RsAnnotationTestBase() {
                 a: 92,
                 b: /*caret*/0,
                 c: 92,
-                d: 0,
+                d: 0
             };
         }
     """)
@@ -86,7 +103,7 @@ class AddStructFieldsFixTest : RsAnnotationTestBase() {
         struct S { a: i32, b: i32 }
 
         fn main() {
-            let _ = S { a: /*caret*/0, b: 0 };
+            let _ = S { a: /*caret*/0, b: 0, };
         }
     """)
 
@@ -118,6 +135,7 @@ class AddStructFieldsFixTest : RsAnnotationTestBase() {
         }
     """)
 
+    @ProjectDescriptor(WithStdlibRustProjectDescriptor::class)
     fun `test issue 980`() = checkBothQuickFix("""
         struct Mesh {
             pub name: String,
@@ -142,11 +160,12 @@ class AddStructFieldsFixTest : RsAnnotationTestBase() {
                 name: String::new(),
                 vertices: Vec::new(),
                 faces: Vec::new(),
-                material: None,
+                material: None
             };
         }
     """)
 
+    @ProjectDescriptor(WithStdlibRustProjectDescriptor::class)
     fun `test many type fields`() = checkBothQuickFix("""
         type AliasedString = String;
 
@@ -171,6 +190,7 @@ class AddStructFieldsFixTest : RsAnnotationTestBase() {
             vec_field: Vec<i32>,
             opt_field: Option<i32>,
             ref_field: &'a String,
+            ref_mut_field: &'a mut String,
             tuple_field: (bool, char, i8, String),
             aliased_field: AliasedString,
             unsupported_type_field: fn(i32) -> i32
@@ -203,6 +223,7 @@ class AddStructFieldsFixTest : RsAnnotationTestBase() {
             vec_field: Vec<i32>,
             opt_field: Option<i32>,
             ref_field: &'a String,
+            ref_mut_field: &'a mut String,
             tuple_field: (bool, char, i8, String),
             aliased_field: AliasedString,
             unsupported_type_field: fn(i32) -> i32
@@ -229,14 +250,16 @@ class AddStructFieldsFixTest : RsAnnotationTestBase() {
                 str_field: String::new(),
                 vec_field: Vec::new(),
                 opt_field: None,
-                ref_field: String::new(),
+                ref_field: &String::new(),
+                ref_mut_field: &mut String::new(),
                 tuple_field: (false, '', 0, String::new()),
                 aliased_field: String::new(),
-                unsupported_type_field: (),
+                unsupported_type_field: ()
             };
         }
     """)
 
+    @ProjectDescriptor(WithStdlibRustProjectDescriptor::class)
     fun `test 1-level recursively fill struct`() = checkRecursiveQuickFix("""
         struct MetaData {
             author: String,
@@ -279,12 +302,13 @@ class AddStructFieldsFixTest : RsAnnotationTestBase() {
                 metadata: MetaData {
                     author: String::new(),
                     licence: None,
-                    specVersion: 0,
-                },
+                    specVersion: 0
+                }
             };
         }
     """)
 
+    @ProjectDescriptor(WithStdlibRustProjectDescriptor::class)
     fun `test 2-level recursively fill struct`() = checkRecursiveQuickFix("""
         struct ToolInfo {
             name: String,
@@ -340,9 +364,43 @@ class AddStructFieldsFixTest : RsAnnotationTestBase() {
                     author: String::new(),
                     licence: None,
                     specVersion: 0,
-                    tool: ToolInfo { name: String::new(), toolVersion: String::new() },
-                },
+                    tool: ToolInfo { name: String::new(), toolVersion: String::new() }
+                }
             };
+        }
+    """)
+
+    fun `test we don't filling struct that can't be instantiated (has private fields)`() = checkRecursiveQuickFix("""
+        mod foo {
+            pub struct Outer {
+                pub inner: Inner,
+                pub field2: i32
+            }
+
+            pub struct Inner {
+                field1: i32,
+                field2: i32
+            }
+        }
+
+        fn main() {
+            <error>foo::Outer</error> {/*caret*/};
+        }
+    """, """
+        mod foo {
+            pub struct Outer {
+                pub inner: Inner,
+                pub field2: i32
+            }
+
+            pub struct Inner {
+                field1: i32,
+                field2: i32
+            }
+        }
+
+        fn main() {
+            foo::Outer { inner: (), field2: 0 };
         }
     """)
 

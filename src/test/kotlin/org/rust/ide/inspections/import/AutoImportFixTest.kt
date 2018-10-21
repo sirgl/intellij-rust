@@ -5,6 +5,9 @@
 
 package org.rust.ide.inspections.import
 
+import org.rust.MockEdition
+import org.rust.cargo.project.workspace.CargoWorkspace
+
 class AutoImportFixTest : AutoImportFixTestBase() {
 
     fun `test import struct`() = checkAutoImportFixByText("""
@@ -199,6 +202,32 @@ class AutoImportFixTest : AutoImportFixTestBase() {
 
         fn main() {
             let f = Foo/*caret*/;
+        }
+    """)
+
+    fun `test insert use item after outer attributes`() = checkAutoImportFixByText("""
+        mod foo {
+            pub struct Foo;
+        }
+
+        #[cfg(test)]
+        mod tests {
+            fn foo() {
+                let f = <error descr="Unresolved reference: `Foo`">Foo/*caret*/</error>;
+            }
+        }
+    """, """
+        mod foo {
+            pub struct Foo;
+        }
+
+        #[cfg(test)]
+        mod tests {
+            use foo::Foo;
+
+            fn foo() {
+                let f = Foo/*caret*/;
+            }
         }
     """)
 
@@ -1074,6 +1103,226 @@ class AutoImportFixTest : AutoImportFixTestBase() {
 
         fn main() {
             let x = Foo/*caret*/ { };
+        }
+    """)
+
+    fun `test import trait method`() = checkAutoImportFixByText("""
+        mod foo {
+            pub trait Foo {
+                fn foo(&self);
+            }
+
+            impl<T> Foo for T {
+                fn foo(&self) {}
+            }
+        }
+
+        fn main() {
+            let x = 123.<error descr="Unresolved reference: `foo`">foo/*caret*/</error>();
+        }
+    """, """
+        use foo::Foo;
+
+        mod foo {
+            pub trait Foo {
+                fn foo(&self);
+            }
+
+            impl<T> Foo for T {
+                fn foo(&self) {}
+            }
+        }
+
+        fn main() {
+            let x = 123.foo/*caret*/();
+        }
+    """)
+
+    fun `test import default trait method`() = checkAutoImportFixByText("""
+        mod foo {
+            pub trait Foo {
+                fn foo(&self) {}
+            }
+
+            impl<T> Foo for T {}
+        }
+
+        fn main() {
+            let x = 123.<error descr="Unresolved reference: `foo`">foo/*caret*/</error>();
+        }
+    """, """
+        use foo::Foo;
+
+        mod foo {
+            pub trait Foo {
+                fn foo(&self) {}
+            }
+
+            impl<T> Foo for T {}
+        }
+
+        fn main() {
+            let x = 123.foo/*caret*/();
+        }
+    """)
+
+    fun `test import reexported trait method`() = checkAutoImportFixByText("""
+        mod foo {
+            mod bar {
+                pub mod baz {
+                    pub trait FooBar {
+                        fn foo_bar(&self);
+                    }
+
+                    impl<T> FooBar for T {
+                        fn foo_bar(&self) {}
+                    }
+                }
+            }
+
+            pub use self::bar::baz;
+        }
+
+        fn main() {
+            let x = 123.<error descr="Unresolved reference: `foo_bar`">foo_bar/*caret*/</error>();
+        }
+    """, """
+        use foo::baz::FooBar;
+
+        mod foo {
+            mod bar {
+                pub mod baz {
+                    pub trait FooBar {
+                        fn foo_bar(&self);
+                    }
+
+                    impl<T> FooBar for T {
+                        fn foo_bar(&self) {}
+                    }
+                }
+            }
+
+            pub use self::bar::baz;
+        }
+
+        fn main() {
+            let x = 123.foo_bar/*caret*/();
+        }
+    """)
+
+    fun `test do not try to import non trait method`() = checkAutoImportFixIsUnavailable("""
+        mod foo {
+            pub trait Foo {
+                fn foo(&self);
+            }
+
+            impl<T> Foo for T {
+                fn foo(&self) {}
+            }
+        }
+
+        struct Bar;
+
+        impl Bar {
+            fn foo(&self) {}
+        }
+
+        fn main() {
+            let x = Bar.foo/*caret*/();
+        }
+    """)
+
+    fun `test multiple trait method import`() = checkAutoImportFixByTextWithMultipleChoice("""
+        mod foo {
+            pub trait Foo {
+                fn foo(&self);
+            }
+
+            pub trait Bar {
+                fn foo(&self);
+            }
+
+            impl<T> Foo for T {
+                fn foo(&self) {}
+            }
+
+            impl<T> Bar for T {
+                fn foo(&self) {}
+            }
+        }
+
+        fn main() {
+            let x = 123.<error descr="Unresolved reference: `foo`">foo/*caret*/</error>();
+        }
+    """, setOf("foo::Foo", "foo::Bar"), "foo::Bar", """
+        use foo::Bar;
+
+        mod foo {
+            pub trait Foo {
+                fn foo(&self);
+            }
+
+            pub trait Bar {
+                fn foo(&self);
+            }
+
+            impl<T> Foo for T {
+                fn foo(&self) {}
+            }
+
+            impl<T> Bar for T {
+                fn foo(&self) {}
+            }
+        }
+
+        fn main() {
+            let x = 123.foo/*caret*/();
+        }
+    """)
+
+    /** Issue [2822](https://github.com/intellij-rust/intellij-rust/issues/2822) */
+    fun `test do not try to import trait object method`() = checkAutoImportFixIsUnavailable("""
+        mod foo {
+            pub trait Foo {
+                fn foo(&self) {}
+            }
+        }
+
+        fn bar(t: &dyn foo::Foo) {
+            t.foo/*caret*/();
+        }
+    """)
+
+    fun `test do not try to import trait bound method`() = checkAutoImportFixIsUnavailable("""
+        mod foo {
+            pub trait Foo {
+                fn foo(&self) {}
+            }
+        }
+
+        fn bar<T: foo::Foo>(t: T) {
+            t.foo/*caret*/();
+        }
+    """)
+
+    @MockEdition(CargoWorkspace.Edition.EDITION_2018)
+    fun `test import item in root module (edition 2018)`() = checkAutoImportFixByText("""
+        mod foo {
+            pub struct Foo;
+        }
+
+        fn main() {
+            let f = <error descr="Unresolved reference: `Foo`">Foo/*caret*/</error>;
+        }
+    """, """
+        use crate::foo::Foo;
+
+        mod foo {
+            pub struct Foo;
+        }
+
+        fn main() {
+            let f = Foo/*caret*/;
         }
     """)
 }

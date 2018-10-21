@@ -523,6 +523,20 @@ class RsResolveTest : RsResolveTestBase() {
                     //^ unresolved
     """)
 
+    fun `test enum variant 3`() = checkByCode("""
+        use E::A;
+
+        enum E {
+            A { a: u32 },
+          //X
+        }
+
+        fn main() {
+            let e = A { a: 10 };
+                  //^
+        }
+    """)
+
     // Enum variants behind an alias are not resolved
     // https://github.com/rust-lang/rust/issues/26264
     // https://github.com/rust-lang/rfcs/issues/2218
@@ -1062,6 +1076,28 @@ class RsResolveTest : RsResolveTestBase() {
               //X
             r#match;
           //^
+        }
+    """)
+
+    fun `test resolve path with crate keyword`() = checkByCode("""
+        mod foo {
+            pub struct Foo;
+                      //X
+        }
+
+        use crate::foo::Foo;
+                       //^
+    """)
+
+    fun `test resolve path with crate keyword 2`() = checkByCode("""
+        mod foo {
+            pub struct Foo;
+                      //X
+        }
+
+        fn main() {
+            let foo = crate::foo::Foo;
+                                 //^
         }
     """)
 }

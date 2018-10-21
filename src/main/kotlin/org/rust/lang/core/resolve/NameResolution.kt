@@ -15,11 +15,16 @@ import com.intellij.psi.PsiElement
 import com.intellij.psi.util.*
 import org.rust.cargo.project.workspace.CargoWorkspace
 import org.rust.cargo.project.workspace.PackageOrigin
+import org.rust.cargo.util.AutoInjectedCrates.CORE
+import org.rust.cargo.util.AutoInjectedCrates.STD
 import org.rust.lang.RsConstants
+import org.rust.lang.core.macros.MACRO_CRATE_IDENTIFIER_PREFIX
+import org.rust.lang.core.macros.findMacroCallExpandedFrom
 import org.rust.lang.core.psi.*
 import org.rust.lang.core.psi.RsFile.Attributes.*
 import org.rust.lang.core.psi.ext.*
 import org.rust.lang.core.resolve.NameResolutionTestmarks.missingMacroUse
+import org.rust.lang.core.resolve.NameResolutionTestmarks.otherVersionOfSameCrate
 import org.rust.lang.core.resolve.NameResolutionTestmarks.selfInGroup
 import org.rust.lang.core.resolve.indexes.RsLangItemIndex
 import org.rust.lang.core.resolve.indexes.RsMacroIndex
@@ -168,18 +173,22 @@ fun processModDeclResolveVariants(modDecl: RsModDeclItem, processor: RsResolvePr
     return false
 }
 
-fun processExternCrateResolveVariants(crate: RsExternCrateItem, isCompletion: Boolean, processor: RsResolveProcessor): Boolean {
-    val pkg = crate.containingCargoPackage ?: return false
+fun processExternCrateResolveVariants(element: RsElement, isCompletion: Boolean, processor: RsResolveProcessor): Boolean {
+    val target = element.containingCargoTarget ?: return false
+    val pkg = target.pkg
 
     val visitedDeps = mutableSetOf<String>()
     fun processPackage(pkg: CargoWorkspace.Package): Boolean {
         if (isCompletion && pkg.origin != PackageOrigin.DEPENDENCY) return false
         val libTarget = pkg.libTarget ?: return false
+        // When crate depends on another version of the same crate
+        // we shouldn't add current package into resolve/completion results
+        if (otherVersionOfSameCrate.hitOnFalse(libTarget == target)) return false
 
         if (pkg.origin == PackageOrigin.STDLIB && pkg.name in visitedDeps) return false
         visitedDeps += pkg.name
         return processor.lazy(libTarget.normName) {
-            libTarget.crateRoot?.toPsiFile(crate.project)?.rustFile
+            libTarget.crateRoot?.toPsiFile(element.project)?.rustFile
         }
     }
 
@@ -222,6 +231,7 @@ fun processPathResolveVariants(lookup: ImplLookup, path: RsPath, isCompletion: B
         is RsPathExpr -> if (isCompletion) TYPES_N_VALUES else VALUES
         else -> TYPES_N_VALUES
     }
+    val isEdition2018 = path.containingCargoTarget?.edition == CargoWorkspace.Edition.EDITION_2018
 
     if (qualifier != null) {
         val primitiveType = TyPrimitive.fromPath(qualifier)
@@ -246,7 +256,10 @@ fun processPathResolveVariants(lookup: ImplLookup, path: RsPath, isCompletion: B
             selfInGroup.hit()
             if (processor("self", base)) return true
         }
-        if (processItemOrEnumVariantDeclarations(base, ns, processor, isSuperChain(qualifier))) return true
+        val isSuperChain = isSuperChain(qualifier)
+        if (processItemOrEnumVariantDeclarations(base, ns, processor,
+                withPrivateImports = isSuperChain,
+                withPlainExternCrateItems = isSuperChain || !isEdition2018)) return true
         if (base is RsTypeDeclarationElement && parent !is RsUseSpeck) {
             // Foo::<Bar>::baz
             val selfTy = if (base is RsImplItem && qualifier.hasCself) {
@@ -279,6 +292,7 @@ fun processPathResolveVariants(lookup: ImplLookup, path: RsPath, isCompletion: B
         val selfSubst = mapOf(TyTypeParameter.self() to typeQual.typeReference.type).toTypeSubst()
         val subst = trait.subst.substituteInValues(selfSubst) + selfSubst
         if (processAllWithSubst(trait.element.members?.typeAliasList.orEmpty(), subst, processor)) return true
+        return false
     }
 
     if (isCompletion) {
@@ -293,30 +307,59 @@ fun processPathResolveVariants(lookup: ImplLookup, path: RsPath, isCompletion: B
     val containingMod = path.containingMod
     val crateRoot = path.crateRoot
     if (!path.hasColonColon) {
+        run { // hacks around $crate macro metavar. See `expandDollarCrateVar` function docs
+            val referenceName = path.referenceName
+            if (referenceName.startsWith(MACRO_CRATE_IDENTIFIER_PREFIX) && path.findMacroCallExpandedFrom() != null) {
+                val crate = referenceName.removePrefix(MACRO_CRATE_IDENTIFIER_PREFIX)
+                val result = if (crate == "self") {
+                    processor.lazy(referenceName) { path.crateRoot }
+                } else {
+                    processExternCrateResolveVariants(path, false) {
+                        if (it.name == crate) processor.lazy(referenceName) { it.element } else false
+                    }
+                }
+                if (result) return true
+            }
+        }
         if (Namespace.Types in ns) {
             if (processor("self", containingMod)) return true
             val superMod = containingMod.`super`
             if (superMod != null && processor("super", superMod)) return true
+            if (crateRoot != null && processor("crate", crateRoot)) return true
+            if (path.kind == PathKind.IDENTIFIER && isEdition2018) {
+                val attributes = (crateRoot as? RsFile)?.attributes
+                val implicitExternCrate = when (attributes) {
+                    NONE -> "std"
+                    NO_STD -> "core"
+                    else -> null
+                }
+                // We shouldn't process implicit extern crate here
+                // because we add it in `ItemResolutionKt.processItemDeclarations`
+                if (path.referenceName != implicitExternCrate) {
+                    if (processExternCrateResolveVariants(path, isCompletion, processor)) return true
+                }
+            }
         }
     }
 
     // Paths in use items are implicitly global.
     if (path.hasColonColon || path.contextStrict<RsUseItem>() != null) {
         if (crateRoot != null) {
-            if (processItemOrEnumVariantDeclarations(crateRoot, ns, processor, true)) return true
+            if (processItemOrEnumVariantDeclarations(crateRoot, ns, processor,
+                    withPrivateImports = true,
+                    withPlainExternCrateItems = !isEdition2018)) return true
         }
         return false
     }
 
-    return processNestedScopesUpwards(path, processor, ns)
+    return processNestedScopesUpwards(path, processor, ns, !isEdition2018)
 }
 
 fun processPatBindingResolveVariants(binding: RsPatBinding, isCompletion: Boolean, processor: RsResolveProcessor): Boolean {
     return processNestedScopesUpwards(binding, { entry ->
         processor.lazy(entry.name) {
-            val element = entry.element
-            val isConstant = element is RsConstant
-                || (element is RsEnumVariant && element.blockFields == null && element.tupleFields == null)
+            val element = entry.element ?: return@lazy null
+            val isConstant = element.isConstantLike
             val isPathOrDestructable = when (element) {
                 is RsMod, is RsEnumItem, is RsEnumVariant, is RsStructItem -> true
                 else -> false
@@ -406,7 +449,7 @@ fun processMacroCallVariants(element: PsiElement, processor: RsResolveProcessor)
     }
     if (result) return true
 
-    val prelude = (element.contextOrSelf<RsElement>())?.findDependencyCrateRoot("std") ?: return false
+    val prelude = (element.contextOrSelf<RsElement>())?.findDependencyCrateRoot(STD) ?: return false
     return processAll(exportedMacros(prelude), processor)
 }
 
@@ -526,14 +569,9 @@ private fun exportedMacrosInternal(scope: RsFile): List<RsMacro> {
             }
         }
 
-        // Implicit extern crate from stdlib
-        val (name, prelude) = when (scope.attributes) {
-            NO_CORE -> null to null
-            NO_STD -> "core" to scope.findDependencyCrateRoot("core")
-            NONE -> "std" to scope.findDependencyCrateRoot("std")
-        }
-        if (name != null && prelude != null) {
-            exportingMacrosCrates[name] = prelude
+        val implicitStdlibCrate = implicitStdlibCrate(scope)
+        if (implicitStdlibCrate != null) {
+            exportingMacrosCrates[implicitStdlibCrate.name] = implicitStdlibCrate.crateRoot
         }
 
         if (exportingMacrosCrates.isNotEmpty()) {
@@ -625,8 +663,8 @@ private fun processFieldDeclarations(struct: RsFieldsOwner, processor: RsResolve
 
 private fun processMethodDeclarationsWithDeref(lookup: ImplLookup, receiver: Ty, processor: RsMethodResolveProcessor): Boolean {
     return lookup.coercionSequence(receiver).withIndex().any { (i, ty) ->
-        val methodProcessor: (AssocItemScopeEntry) -> Boolean = { (name, element, _, impl) ->
-            element is RsFunction && !element.isAssocFn && processor(MethodResolveVariant(name, element, impl, ty, i))
+        val methodProcessor: (AssocItemScopeEntry) -> Boolean = { (name, element, _, source) ->
+            element is RsFunction && !element.isAssocFn && processor(MethodResolveVariant(name, element, ty, i, source))
         }
         processAssociatedItems(lookup, ty, VALUES, methodProcessor)
     }
@@ -640,22 +678,22 @@ private fun processAssociatedItems(
 ): Boolean {
     val traitBounds = (type as? TyTypeParameter)?.getTraitBoundsTransitively()
     val visitedInherent = mutableSetOf<String>()
-    fun processTraitOrImpl(traitOrImpl: RsTraitOrImpl, inherent: Boolean): Boolean {
+    fun processTraitOrImpl(traitOrImpl: TraitImplSource, inherent: Boolean): Boolean {
         fun inherentProcessor(entry: RsNamedElement): Boolean {
             val name = entry.name ?: return false
             if (inherent) visitedInherent.add(name)
             if (!inherent && name in visitedInherent) return false
 
-            val subst = if (traitBounds != null && traitOrImpl is RsTraitItem) {
+            val subst = if (traitBounds != null && traitOrImpl is TraitImplSource.TraitBound) {
                 // Retrieve trait subst for associated type like
                 // trait SliceIndex<T> { type Output; }
                 // fn get<I: : SliceIndex<S>>(index: I) -> I::Output
                 // Resulting subst will contains mapping T => S
-                traitBounds.find { it.element == traitOrImpl }?.subst ?: emptySubstitution
+                traitBounds.filter { it.element == traitOrImpl.value }.map { it.subst }
             } else {
-                emptySubstitution
+                listOf(emptySubstitution)
             }
-            return processor(AssocItemScopeEntry(name, entry, subst, traitOrImpl as? RsImplItem))
+            return subst.any { processor(AssocItemScopeEntry(name, entry, it, traitOrImpl)) }
         }
 
         /**
@@ -663,12 +701,12 @@ private fun processAssociatedItems(
          * which are not implemented.
          */
         fun processMembersWithDefaults(accessor: (RsMembers) -> List<RsNamedElement>): Boolean {
-            val directlyImplemented = traitOrImpl.members?.let { accessor(it) }.orEmpty()
+            val directlyImplemented = traitOrImpl.value.members?.let { accessor(it) }.orEmpty()
             if (directlyImplemented.any { inherentProcessor(it) }) return true
 
-            if (traitOrImpl is RsImplItem) {
+            if (traitOrImpl is TraitImplSource.ExplicitImpl) {
                 val direct = directlyImplemented.map { it.name }.toSet()
-                val membersFromTrait = traitOrImpl.implementedTrait?.element?.members ?: return false
+                val membersFromTrait = traitOrImpl.value.implementedTrait?.element?.members ?: return false
                 for (member in accessor(membersFromTrait)) {
                     if (member.name !in direct && inherentProcessor(member)) return true
                 }
@@ -686,7 +724,7 @@ private fun processAssociatedItems(
         return false
     }
 
-    val (traits, inherent) = lookup.findImplsAndTraits(type).partition { (it as? RsImplItem)?.traitRef != null }
+    val (inherent, traits) = lookup.findImplsAndTraits(type).partition { it is TraitImplSource.ExplicitImpl && it.value.traitRef == null }
     if (inherent.any { processTraitOrImpl(it, true) }) return true
     if (traits.any { processTraitOrImpl(it, false) }) return true
     return false
@@ -699,13 +737,18 @@ private fun processAssociatedItemsWithSelfSubst(
     selfSubst: Substitution,
     processor: RsResolveProcessor
 ): Boolean {
-    val assocItemsProcessor: RsResolveProcessor = {
-        processor(it.name, it.element!!, it.subst + selfSubst)
+    return processAssociatedItems(lookup, type, ns) {
+        processor(it.copy(subst = it.subst + selfSubst))
     }
-    return processAssociatedItems(lookup, type, ns, assocItemsProcessor)
 }
 
-private fun processLexicalDeclarations(scope: RsElement, cameFrom: PsiElement, ns: Set<Namespace>, processor: RsResolveProcessor): Boolean {
+private fun processLexicalDeclarations(
+    scope: RsElement,
+    cameFrom: PsiElement,
+    ns: Set<Namespace>,
+    withPlainExternCrateItems: Boolean = true,
+    processor: RsResolveProcessor
+): Boolean {
     check(cameFrom.context == scope)
 
     fun processPattern(pattern: RsPat, processor: RsResolveProcessor): Boolean {
@@ -723,7 +766,9 @@ private fun processLexicalDeclarations(scope: RsElement, cameFrom: PsiElement, n
 
     when (scope) {
         is RsMod -> {
-            if (processItemDeclarations(scope, ns, processor, withPrivateImports = true)) return true
+            if (processItemDeclarations(scope, ns, processor,
+                    withPrivateImports = true,
+                    withPlainExternCrateItems = withPlainExternCrateItems)) return true
         }
 
         is RsStructItem,
@@ -823,7 +868,12 @@ private fun processLexicalDeclarations(scope: RsElement, cameFrom: PsiElement, n
     return false
 }
 
-private fun processNestedScopesUpwards(scopeStart: RsElement, processor: RsResolveProcessor, ns: Set<Namespace>): Boolean {
+private fun processNestedScopesUpwards(
+    scopeStart: RsElement,
+    processor: RsResolveProcessor,
+    ns: Set<Namespace>,
+    withPlainExternCrateItems: Boolean = true
+): Boolean {
     val prevScope = mutableSetOf<String>()
     walkUp(scopeStart, { it is RsMod }) { cameFrom, scope ->
         val currScope = mutableListOf<String>()
@@ -833,18 +883,48 @@ private fun processNestedScopesUpwards(scopeStart: RsElement, processor: RsResol
                 processor(e)
             }
         }
-        if (processLexicalDeclarations(scope, cameFrom, ns, shadowingProcessor)) return@walkUp true
+        if (processLexicalDeclarations(scope, cameFrom, ns, withPlainExternCrateItems, shadowingProcessor)) return@walkUp true
         prevScope.addAll(currScope)
         false
     }
 
-    val prelude = scopeStart.containingCargoPackage?.findDependency("std")?.crateRoot
-        ?.findFileByRelativePath("../prelude/v1.rs")
-        ?.toPsiFile(scopeStart.project)
-        ?.rustFile
-    if (prelude != null && processItemDeclarations(prelude, ns, { v -> v.name !in prevScope && processor(v) }, false)) return true
+    val prelude = findPrelude(scopeStart)
+    val preludeProcessor: (ScopeEntry) -> Boolean = { v -> v.name !in prevScope && processor(v) }
+    if (prelude != null && processItemDeclarations(prelude, ns, preludeProcessor,
+            withPrivateImports = false,
+            withPlainExternCrateItems = withPlainExternCrateItems)) return true
 
     return false
+}
+
+private fun findPrelude(element: RsElement): RsFile? {
+    val crateRoot = element.crateRoot as? RsFile ?: return null
+    val cargoPackage = crateRoot.containingCargoPackage
+    val isStdlib = cargoPackage?.origin == PackageOrigin.STDLIB
+    val packageName = cargoPackage?.normName
+
+    // `std` and `core` crates explicitly add their prelude
+    val stdlibCrateRoot = if (isStdlib && (packageName == STD || packageName == CORE)) {
+        crateRoot
+    } else {
+        implicitStdlibCrate(crateRoot)?.crateRoot
+    }
+
+    return stdlibCrateRoot
+        ?.virtualFile
+        ?.findFileByRelativePath("../prelude/v1.rs")
+        ?.toPsiFile(element.project)
+        ?.rustFile
+}
+
+// Implicit extern crate from stdlib
+private fun implicitStdlibCrate(scope: RsFile): ImplicitStdlibCrate? {
+    val (name, crateRoot) = when (scope.attributes) {
+        NO_CORE -> return null
+        NO_STD -> CORE to scope.findDependencyCrateRoot(CORE)
+        NONE -> STD to scope.findDependencyCrateRoot(STD)
+    }
+    return if (crateRoot == null) null else ImplicitStdlibCrate(name, crateRoot)
 }
 
 // There's already similar functions in TreeUtils, should use it
@@ -882,4 +962,7 @@ object NameResolutionTestmarks {
     val missingMacroExport = Testmark("missingMacroExport")
     val missingMacroUse = Testmark("missingMacroUse")
     val selfInGroup = Testmark("selfInGroup")
+    val otherVersionOfSameCrate = Testmark("otherVersionOfSameCrate")
 }
+
+private data class ImplicitStdlibCrate(val name: String, val crateRoot: RsFile)

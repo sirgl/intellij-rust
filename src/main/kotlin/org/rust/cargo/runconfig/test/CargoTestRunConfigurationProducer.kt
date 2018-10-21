@@ -155,14 +155,14 @@ sealed class TestConfig {
     fun cargoCommandLine(): CargoCommandLine {
         var commandLine = CargoCommandLine.forTargets(targets, "test", listOf(path))
         if (exact) {
-            commandLine = commandLine.withDoubleDashFlag("--exact")
+            commandLine = commandLine.addArgToBinary("--exact")
         }
         return commandLine
     }
 
     companion object {
         private fun hasTestFunction(mod: RsMod): Boolean =
-            mod.processExpandedItems { it is RsFunction && it.isTest }
+            mod.processExpandedItems { it is RsFunction && it.isTest || it is RsMod && hasTestFunction(it) }
     }
 }
 

@@ -18,12 +18,14 @@ import com.intellij.openapi.util.Disposer
 import com.intellij.psi.PsiElement
 import com.intellij.psi.PsiFile
 import com.intellij.testFramework.LightProjectDescriptor
-import org.intellij.lang.annotations.Language
 import com.intellij.testFramework.TestDataProvider
+import org.intellij.lang.annotations.Language
 import org.jdom.Element
+import org.rust.RsTestBase
 import org.rust.cargo.project.model.cargoProjects
 import org.rust.cargo.project.workspace.CargoWorkspace
 import org.rust.cargo.project.workspace.CargoWorkspace.CrateType
+import org.rust.cargo.project.workspace.CargoWorkspace.Edition
 import org.rust.cargo.project.workspace.CargoWorkspace.TargetKind
 import org.rust.cargo.project.workspace.CargoWorkspaceData
 import org.rust.cargo.project.workspace.PackageOrigin
@@ -31,7 +33,6 @@ import org.rust.cargo.runconfig.command.CargoCommandConfiguration
 import org.rust.cargo.runconfig.command.CargoCommandConfigurationType
 import org.rust.cargo.runconfig.command.CargoExecutableRunConfigurationProducer
 import org.rust.cargo.runconfig.test.CargoTestRunConfigurationProducer
-import org.rust.lang.RsTestBase
 import org.rust.lang.core.psi.RsFile
 import org.rust.lang.core.psi.RsFunction
 import org.rust.lang.core.psi.ext.RsMod
@@ -324,7 +325,7 @@ class RunConfigurationProducerTest : RsTestBase() {
         })
 
         IdeaTestApplication.getInstance().setDataProvider(object : TestDataProvider(project) {
-            override fun getData(dataId: String?): Any? =
+            override fun getData(dataId: String): Any? =
                 if (PSI_ELEMENT_ARRAY.`is`(dataId)) files else super.getData(dataId)
         })
 
@@ -394,7 +395,8 @@ class RunConfigurationProducerTest : RsTestBase() {
             val name: String,
             val file: File,
             val kind: CargoWorkspace.TargetKind,
-            val crateTypes: List<CargoWorkspace.CrateType>
+            val crateTypes: List<CargoWorkspace.CrateType>,
+            val edition: CargoWorkspace.Edition
         )
 
         private var targets = arrayListOf<Target>()
@@ -405,22 +407,22 @@ class RunConfigurationProducerTest : RsTestBase() {
         private val hello = """pub fn hello() -> String { return "Hello, World!".to_string() }"""
 
         fun bin(name: String, path: String, @Language("Rust") code: String = helloWorld): TestProjectBuilder {
-            addTarget(name, TargetKind.BIN, CrateType.BIN, path, code)
+            addTarget(name, TargetKind.BIN, CrateType.BIN, Edition.EDITION_2015, path, code)
             return this
         }
 
         fun example(name: String, path: String, @Language("Rust") code: String = helloWorld): TestProjectBuilder {
-            addTarget(name, TargetKind.EXAMPLE, CrateType.BIN, path, code)
+            addTarget(name, TargetKind.EXAMPLE, CrateType.BIN, Edition.EDITION_2015, path, code)
             return this
         }
 
         fun test(name: String, path: String, @Language("Rust") code: String = simpleTest): TestProjectBuilder {
-            addTarget(name, TargetKind.TEST, CrateType.BIN, path, code)
+            addTarget(name, TargetKind.TEST, CrateType.BIN, Edition.EDITION_2015, path, code)
             return this
         }
 
         fun lib(name: String, path: String, @Language("Rust") code: String = hello): TestProjectBuilder {
-            addTarget(name, TargetKind.LIB, CrateType.LIB, path, code)
+            addTarget(name, TargetKind.LIB, CrateType.LIB, Edition.EDITION_2015, path, code)
             return this
         }
 
@@ -463,11 +465,13 @@ class RunConfigurationProducerTest : RsTestBase() {
                                     myFixture.tempDirFixture.getFile(it.file.path)!!.url,
                                     it.name,
                                     it.kind,
-                                    it.crateTypes
+                                    it.crateTypes,
+                                    it.edition
                                 )
                             },
                             source = null,
-                            origin = PackageOrigin.WORKSPACE
+                            origin = PackageOrigin.WORKSPACE,
+                            edition = Edition.EDITION_2015
                         )
                     ),
                     dependencies = emptyMap()
@@ -477,9 +481,16 @@ class RunConfigurationProducerTest : RsTestBase() {
             project.cargoProjects.createTestProject(myFixture.findFileInTempDir("."), projectDescription)
         }
 
-        private fun addTarget(name: String, kind: CargoWorkspace.TargetKind, crateType: CargoWorkspace.CrateType, path: String, code: String) {
+        private fun addTarget(
+            name: String,
+            kind: CargoWorkspace.TargetKind,
+            crateType: CargoWorkspace.CrateType,
+            edition: CargoWorkspace.Edition,
+            path: String,
+            code: String
+        ) {
             val file = addFile(path, code)
-            targets.add(Target(name, file, kind, listOf(crateType)))
+            targets.add(Target(name, file, kind, listOf(crateType), edition))
         }
 
         private fun addFile(path: String, code: String): File {

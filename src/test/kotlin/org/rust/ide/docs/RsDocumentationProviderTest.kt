@@ -8,7 +8,7 @@ package org.rust.ide.docs
 import com.intellij.codeInsight.documentation.DocumentationManager
 import com.intellij.psi.PsiElement
 import org.intellij.lang.annotations.Language
-import org.rust.lang.RsTestBase
+import org.rust.RsTestBase
 import org.rust.openapiext.Testmark
 
 abstract class RsDocumentationProviderTest : RsTestBase() {
@@ -25,6 +25,7 @@ abstract class RsDocumentationProviderTest : RsTestBase() {
             .findTargetElement(myFixture.editor, offset, myFixture.file, originalElement)!!
 
         val actual = RsDocumentationProvider().block(element, originalElement)?.trim()
+            ?: error("Expected not null result")
         assertSameLines(expected.trimIndent(), actual)
     }
 

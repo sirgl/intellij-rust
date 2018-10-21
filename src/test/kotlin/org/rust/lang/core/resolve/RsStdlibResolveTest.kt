@@ -5,12 +5,21 @@
 
 package org.rust.lang.core.resolve
 
-import com.intellij.util.text.SemVer
+import org.rust.ProjectDescriptor
+import org.rust.WithStdlibRustProjectDescriptor
+import org.rust.cargo.project.model.cargoProjects
+import org.rust.cargo.project.workspace.CargoWorkspace
 import org.rust.lang.core.types.infer.TypeInferenceMarks
 
+@ProjectDescriptor(WithStdlibRustProjectDescriptor::class)
 class RsStdlibResolveTest : RsResolveTestBase() {
 
-    override fun getProjectDescriptor() = WithStdlibRustProjectDescriptor
+    override fun runTest() {
+        for (edition in CargoWorkspace.Edition.values()) {
+            project.cargoProjects.setEdition(edition)
+            super.runTest()
+        }
+    }
 
     fun `test resolve fs`() = stubOnlyResolve("""
     //- main.rs
@@ -481,18 +490,7 @@ class RsStdlibResolveTest : RsResolveTestBase() {
         }
     """, TypeInferenceMarks.questionOperator)
 
-    fun `test try! macro`() = checkByCode("""
-        struct S { field: u32 }
-                    //X
-        fn foo() -> Result<S, ()> { unimplemented!() }
 
-        //noinspection RsTryMacro
-        fn main() {
-            let s = try!(foo());
-            s.field;
-            //^
-        }
-    """)
 
     fun `test try! macro with aliased Result`() = checkByCode("""
         mod io {
@@ -537,7 +535,22 @@ class RsStdlibResolveTest : RsResolveTestBase() {
         }                    //^ ...convert.rs
     """)
 
-    companion object {
-        private val RUST_1_25 = SemVer.parseFromText("1.25.0")!!
-    }
+    fun `test resolve with no_std attribute`() = stubOnlyResolve("""
+    //- main.rs
+        #![no_std]
+
+        fn foo(v: Vec) {}
+                 //^ unresolved
+    """)
+
+    fun `test inherent impl have higher priority than derived`() = checkByCode("""
+        #[derive(Clone)]
+        struct S;
+        impl S {
+            fn clone(&self) {}
+        }    //X
+        fn main() {
+            S.clone();
+        }   //^
+    """)
 }

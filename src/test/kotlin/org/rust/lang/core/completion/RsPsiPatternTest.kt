@@ -8,7 +8,7 @@ package org.rust.lang.core.completion
 import com.intellij.patterns.ElementPattern
 import com.intellij.psi.PsiElement
 import org.intellij.lang.annotations.Language
-import org.rust.lang.RsTestBase
+import org.rust.RsTestBase
 import org.rust.lang.core.RsPsiPattern
 
 class RsPsiPatternTest : RsTestBase() {
@@ -276,6 +276,23 @@ class RsPsiPatternTest : RsTestBase() {
                  //^
         struct Foo(i32);
     """, RsPsiPattern.derivedTraitMetaItem)
+
+    fun `test literal in include macro`() = testPattern("""
+        include!("foo.rs");
+                  //^
+    """, RsPsiPattern.includeMacroLiteral)
+
+    fun `test literal in path attr on mod decl`() = testPattern("""
+        #[path="bar.rs"]
+                //^
+        mod foo;
+    """, RsPsiPattern.pathAttrLiteral)
+
+    fun `test literal in path attr on mod`() = testPattern("""
+        #[path="bar.rs"]
+                //^
+        mod foo {}
+    """, RsPsiPattern.pathAttrLiteral)
 
     private inline fun <reified T : PsiElement> testPattern(@Language("Rust") code: String, pattern: ElementPattern<T>) {
         InlineFile(code)

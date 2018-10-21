@@ -4,10 +4,10 @@ import org.jetbrains.kotlin.gradle.tasks.KotlinCompile
 import de.undercouch.gradle.tasks.download.Download
 import org.gradle.api.internal.HasConvention
 import org.gradle.api.tasks.SourceSet
-import org.jetbrains.grammarkit.GrammarKitPluginExtension
 import org.jetbrains.grammarkit.tasks.GenerateLexer
 import org.jetbrains.grammarkit.tasks.GenerateParser
-import org.jetbrains.kotlin.gradle.plugin.KotlinSourceSet
+// since kotlin 1.3-rc `KotlinSourceSet` moved back to `org.jetbrains.kotlin.gradle.plugin` package
+import org.jetbrains.kotlin.gradle.plugin.source.KotlinSourceSet
 import org.gradle.api.JavaVersion.VERSION_1_8
 import org.gradle.api.tasks.testing.logging.TestExceptionFormat
 import org.gradle.api.tasks.testing.logging.TestLogEvent
@@ -20,9 +20,11 @@ import kotlin.concurrent.thread
 buildscript {
     repositories {
         maven { setUrl("https://jitpack.io") }
+        maven { setUrl("https://dl.bintray.com/kotlin/kotlin-eap") }
     }
     dependencies {
-        classpath("com.github.hurricup:gradle-grammar-kit-plugin:2018.1.2")
+        classpath("com.github.hurricup:gradle-grammar-kit-plugin:2018.1.7")
+        classpath("org.jetbrains.kotlin:kotlin-gradle-plugin:1.3-M2")
     }
 }
 
@@ -33,9 +35,9 @@ val platformVersion = prop("platformVersion")
 
 plugins {
     idea
-    kotlin("jvm") version "1.2.41"
-    id("org.jetbrains.intellij") version "0.3.4"
+    id("org.jetbrains.intellij") version "0.3.7"
     id("de.undercouch.download") version "3.4.3"
+    id("net.saliman.properties") version "1.4.6"
 }
 
 idea {
@@ -55,6 +57,7 @@ allprojects {
 
     repositories {
         mavenCentral()
+        maven { setUrl("https://dl.bintray.com/kotlin/kotlin-eap") }
     }
 
     idea {
@@ -64,20 +67,16 @@ allprojects {
     }
 
     intellij {
-        version = prop("ideaVersion_$platformVersion")
+        version = prop("ideaVersion")
         downloadSources = !CI
         updateSinceUntilBuild = true
         instrumentCode = false
         ideaDependencyCachePath = file("deps").absolutePath
 
         tasks.withType<PatchPluginXmlTask> {
-            sinceBuild(prop("sinceBuild_$platformVersion"))
-            untilBuild(prop("untilBuild_$platformVersion"))
+            sinceBuild(prop("sinceBuild"))
+            untilBuild(prop("untilBuild"))
         }
-    }
-
-    configure<GrammarKitPluginExtension> {
-        grammarKitRelease = "2017.1.4"
     }
 
     tasks.withType<PublishTask> {
@@ -99,7 +98,7 @@ allprojects {
         targetCompatibility = VERSION_1_8
     }
 
-    java.sourceSets {
+    sourceSets {
         getByName("main").java.srcDirs("src/gen")
     }
 
@@ -118,13 +117,13 @@ allprojects {
 val channelSuffix = if (channel.isBlank()) "" else "-$channel"
 
 project(":") {
-    val clionVersion = prop("clionVersion_$platformVersion")
+    val clionVersion = prop("clionVersion")
     val versionSuffix = "-$platformVersion$channelSuffix"
     version = "0.2.0.${prop("buildNumber")}$versionSuffix"
     intellij {
         pluginName = "intellij-rust"
 //        alternativeIdePath = "deps/clion-$clionVersion"
-        setPlugins(project(":intellij-toml"))
+        setPlugins(project(":intellij-toml"), "IntelliLang")
     }
 
     repositories {
@@ -132,14 +131,13 @@ project(":") {
     }
 
     dependencies {
-        compileOnly("org.jetbrains.kotlin:kotlin-stdlib-jdk8")
         compile("org.jetbrains:markdown:0.1.28") {
             exclude(module = "kotlin-runtime")
             exclude(module = "kotlin-stdlib")
         }
     }
 
-    java.sourceSets {
+    sourceSets {
         getByName("main").kotlin.srcDirs("src/$platformVersion/kotlin")
         create("debugger") {
             kotlin.srcDirs("debugger/src/main/kotlin", "debugger/src/$platformVersion/kotlin")
@@ -150,7 +148,7 @@ project(":") {
     }
 
     tasks.withType<Jar> {
-        from(java.sourceSets.getByName("debugger").output)
+        from(sourceSets.getByName("debugger").output)
     }
 
     val generateRustLexer = task<GenerateLexer>("generateRustLexer") {

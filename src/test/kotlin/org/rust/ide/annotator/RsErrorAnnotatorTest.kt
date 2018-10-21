@@ -5,7 +5,9 @@
 
 package org.rust.ide.annotator
 
-import org.rust.lang.MockRustcVersion
+import org.rust.MockEdition
+import org.rust.MockRustcVersion
+import org.rust.cargo.project.workspace.CargoWorkspace
 
 class RsErrorAnnotatorTest : RsAnnotationTestBase() {
     override val dataPath = "org/rust/ide/annotator/fixtures/errors"
@@ -1171,5 +1173,62 @@ class RsErrorAnnotatorTest : RsAnnotationTestBase() {
         mod foo {
             #![feature(crate_visibility_modifier)]
         }
+    """)
+
+    fun `test parenthesized lifetime bounds`() = checkErrors("""
+        fn foo<'a, T: <error descr="Parenthesized lifetime bounds are not supported">('a)</error>>(t: T) {
+            unimplemented!();
+        }
+    """)
+
+    @MockEdition(CargoWorkspace.Edition.EDITION_2018)
+    fun `test crate keyword not at the beginning E0433`() = checkErrors("""
+        use crate::foo::<error descr="`crate` in paths can only be used in start position [E0433]">crate</error>::Foo;
+    """)
+
+    @MockEdition(CargoWorkspace.Edition.EDITION_2018)
+    fun `test crate keyword not at the beginning in use group E0433`() = checkErrors("""
+        use crate::foo::{<error descr="`crate` in paths can only be used in start position [E0433]">crate</error>::Foo};
+    """)
+
+    @MockRustcVersion("1.28.0")
+    fun `test crate in path feature E0658`() = checkErrors("""
+        mod foo {
+            pub struct Foo;
+        }
+
+        use <error descr="`crate` in paths is experimental [E0658]">crate</error>::foo::Foo;
+    """)
+
+    @MockRustcVersion("1.29.0-nightly")
+    fun `test crate in path feature E0658 2`() = checkErrors("""
+        mod foo {
+            pub struct Foo;
+        }
+
+        use <error descr="`crate` in paths is experimental [E0658]">crate</error>::foo::Foo;
+    """)
+
+    @MockEdition(CargoWorkspace.Edition.EDITION_2018)
+    fun `test crate in path feature E0658 3`() = checkErrors("""
+        mod foo {
+            pub struct Foo;
+        }
+
+        use crate::foo::Foo;
+    """)
+
+    fun `test E0404 expected trait`() = checkErrors("""
+        struct S;
+        enum E {}
+        type T = S;
+        mod a {}
+        trait Trait {}
+        impl <error descr="Expected trait, found struct `S` [E0404]">S</error> for S {}
+        impl <error descr="Expected trait, found enum `E` [E0404]">E</error> for S {}
+        impl <error descr="Expected trait, found type alias `T` [E0404]">T</error> for S {}
+        impl <error descr="Expected trait, found module `a` [E0404]">a</error> for S {}
+        fn foo<A: <error descr="Expected trait, found struct `S` [E0404]">S</error>>() {}
+        impl Trait for S {}
     """)
 }

@@ -114,9 +114,12 @@ class RsPsiFactory(private val project: Project) {
         createStatement("let ${"mut".iff(mutable)}$name${if (type != null) ": ${type.text}" else ""} = ${expr.text};") as RsLetDecl
 
 
-    fun createType(text: String): RsTypeReference =
-        createFromText("fn main() { let a : $text; }")
+    fun createType(text: CharSequence): RsTypeReference =
+        tryCreateType(text)
             ?: error("Failed to create type from text: `$text`")
+
+    fun tryCreateType(text: CharSequence): RsTypeReference? =
+        createFromText("fn main() { let a : $text; }")
 
     fun createMethodParam(text: String): PsiElement {
         val fnItem: RsFunction = createTraitMethodMember("fn foo($text);")
@@ -193,7 +196,7 @@ class RsPsiFactory(private val project: Project) {
         typeBounds: List<RsTypeParameter>
     ): RsWhereClause {
 
-        val lifetimes = lifetimeBounds
+        val lifetimeConstraints = lifetimeBounds
             .filter { it.lifetimeParamBounds != null }
             .mapNotNull { it.text }
 
@@ -201,7 +204,7 @@ class RsPsiFactory(private val project: Project) {
             .filter { it.typeParamBounds != null }
             .mapNotNull { it.text }
 
-        val whereClauseConstraints = (lifetimes + typeConstraints).joinToString(", ")
+        val whereClauseConstraints = (lifetimeConstraints + typeConstraints).joinToString(", ")
 
         val text = "where $whereClauseConstraints"
         return createFromText("fn main() $text {}")
@@ -285,6 +288,9 @@ class RsPsiFactory(private val project: Project) {
             ?: error("Failed to create parameter element")
     }
 
+    fun tryCreatePat(text: CharSequence): RsPat? =
+        createFromText("fn f($text: ()) {}")
+
     fun createPatBinding(name: String, mutable: Boolean = false, ref: Boolean = false): RsPatBinding =
         (createStatement("let ${"ref ".iff(ref)}${"mut ".iff(mutable)}$name = 10;") as RsLetDecl).pat
             ?.firstChild as RsPatBinding?
@@ -351,8 +357,8 @@ private fun RsTypeReference.substAndGetText(subst: Substitution): String =
 private fun RsSelfParameter.substAndGetText(subst: Substitution): String =
     buildString {
         append(and?.text ?: "")
-        val lifetime = lifetime.resolve().substitute(subst)
-        if (lifetime != ReUnknown) append("$lifetime ")
+        val region = lifetime.resolve().substitute(subst)
+        if (region != ReUnknown) append("$region ")
         if (mutability == MUTABLE) append("mut ")
         append(self.text)
     }

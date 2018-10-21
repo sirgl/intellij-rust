@@ -17,6 +17,7 @@ import com.intellij.psi.PsiElement
 import com.intellij.psi.PsiManager
 import com.intellij.psi.PsiWhiteSpace
 import com.intellij.psi.impl.source.DummyHolderFactory
+import com.intellij.psi.tree.TokenSet
 import com.intellij.psi.util.CachedValueProvider
 import com.intellij.psi.util.CachedValuesManager
 import com.intellij.psi.util.PsiModificationTracker
@@ -107,22 +108,19 @@ class MacroExpander(val project: Project) {
         }
 
         val expandedText = expandMacroAsText(def, call) ?: return null
-        return when (call.context) {
-            is RsMacroExpr -> listOfNotNull(psiFactory.tryCreateExpression(expandedText))
-            else -> psiFactory.createFile(expandedText).childrenOfType()
-        }
+
+        return psiFactory.parseExpandedTextWithContext(call, expandedText)
     }
 
     private fun expandMacroAsText(def: RsMacro, call: RsMacroCall): CharSequence? {
         val (case, subst) = findMatchingPattern(def, call) ?: return null
         val macroExpansion = case.macroExpansion ?: return null
 
-        val crate = def.containingMod.crateRelativePath ?: ""
         val substWithGlobalVars = WithParent(
             subst,
             WithParent(
                 MacroSubstitution(
-                    singletonMap("crate", crate),
+                    singletonMap("crate", expandDollarCrateVar(call, def)),
                     emptyList()
                 ),
                 null
@@ -171,7 +169,7 @@ class MacroExpander(val project: Project) {
                 is RsMacroExpansion, is RsMacroExpansionContents ->
                     if (!substituteMacro(sb, child, subst)) return false
                 is RsMacroReference ->
-                    sb.append(subst.getVar(child.referenceName) ?: return false)
+                    sb.safeAppend(subst.getVar(child.referenceName) ?: return false)
                 is RsMacroExpansionReferenceGroup -> {
                     child.macroExpansionContents?.let { contents ->
                         val separator = child.macroExpansionGroupSeparator?.text ?: ""
@@ -186,13 +184,19 @@ class MacroExpander(val project: Project) {
                     }
                 }
                 else -> {
-                    sb.append(" ")
-                    sb.append(child.text)
-                    sb.append(" ")
+                    sb.safeAppend(child.text)
                 }
             }
         }
         return true
+    }
+
+    /** Ensures that the buffer ends (or [str] starts) with a whitespace and appends [str] to the buffer */
+    private fun StringBuilder.safeAppend(str: String) {
+        if (!isEmpty() && !last().isWhitespace() && !str.isEmpty() && !str.first().isWhitespace()) {
+            append(" ")
+        }
+        append(str)
     }
 
     private val RsMacro.macroBodyStubbed: RsMacroBody?
@@ -207,6 +211,57 @@ class MacroExpander(val project: Project) {
             }
         }
 }
+
+/**
+ * Returns (synthetic) path from [call] to [def]'s crate
+ * We can't just expand `$crate` to something like `::crate_name` because
+ * we can pass a result of `$crate` expansion to another macro as a single identifier.
+ *
+ * Let's look at the example:
+ * ```
+ * // foo_crate
+ * macro_rules! foo {
+ *     () => { bar!($crate); } // $crate consumed as a single identifier by `bar!`
+ * }
+ * // bar_crate
+ * macro_rules! bar {
+ *     ($i:ident) => { fn f() { $i::some_item(); } }
+ * }
+ * // baz_crate
+ * mod baz {
+ *     foo!();
+ * }
+ * ```
+ * Imagine that macros `foo`, `bar` and the foo's call are located in different
+ * crates. In this case, when expanding `foo!()`, we should expand $crate to
+ * `::foo_crate`. This `::` is needed to make the path to the crate guaranteed
+ * absolutely (and also to make it work on rust 2015 edition).
+ * Ok, let's look at the result of single step of `foo` macro expansion:
+ * `foo!()` => `bar!(::foo_crate)`. Syntactic construction `::foo_crate` consists
+ * of 2 tokens: `::` and `foo_crate` (identifier). BUT `bar` expects a single
+ * identifier as an input! And this is successfully complied by the rust compiler!!
+ *
+ * The secret is that we should not really expand `$crate` to `::foo_crate`.
+ * We should expand it to "something" that can be passed to another macro
+ * as a single identifier.
+ *
+ * Rustc figures it out by synthetic token (without text representation).
+ * Rustc can do it this way because its macro substitution is based on AST.
+ * But our expansion is text-based, so we must provide something textual
+ * that can be parsed as an identifier.
+ *
+ * It's a very awful hack and we know it.
+ * DON'T TRY THIS AT HOME
+ */
+private fun expandDollarCrateVar(call: RsMacroCall, def: RsMacro): String {
+    val defTarget = def.containingCargoTarget
+    val callTarget = call.containingCargoTarget
+    val crateName = if (defTarget == callTarget) "self" else defTarget?.normName ?: ""
+    return MACRO_CRATE_IDENTIFIER_PREFIX + crateName
+}
+
+/** Prefix for synthetic identifier produced from `$crate` metavar. See [expandDollarCrateVar] */
+const val MACRO_CRATE_IDENTIFIER_PREFIX: String = "IntellijRustDollarCrate_"
 
 private class MacroPattern private constructor(
     val pattern: Sequence<PsiElement>
@@ -275,7 +330,9 @@ private class MacroPattern private constructor(
                 RustParser(),
                 RustParser.EXTENDS_SETS_
             )
-            val marker = GeneratedParserUtilBase.enter_section_(adaptBuilder, 0, GeneratedParserUtilBase._COLLAPSE_, null)
+            val marker = GeneratedParserUtilBase
+                .enter_section_(adaptBuilder, 0, GeneratedParserUtilBase._COLLAPSE_, null)
+
             val parsed = when (type) {
                 "path" -> RustParser.PathGenericArgsWithColons(adaptBuilder, 0)
                 "expr" -> RustParser.Expr(adaptBuilder, 0, -1)
@@ -332,11 +389,17 @@ private class MacroPattern private constructor(
             }
         }
 
+        val isExpectedAtLeastOne = group.plus != null
+        if (isExpectedAtLeastOne && groups.isEmpty()) {
+            MacroExpansionMarks.failMatchGroupTooFewElements.hit()
+            return null
+        }
+
         return groups
     }
 
     private fun parseIdentifier(b: PsiBuilder): Boolean {
-        return if (b.tokenType == RsElementTypes.IDENTIFIER) {
+        return if (b.tokenType in IDENTIFIER_TOKENS) {
             b.advanceLexer()
             true
         } else {
@@ -380,6 +443,18 @@ private class MacroPattern private constructor(
             RustParser::UseItem,
             RustParser::ExternCrateItem,
             RustParser::MacroCall
+        )
+
+        /**
+         * Some tokens that treated as keywords by our lexer,
+         * but rustc's macro parser treats them as identifiers
+         */
+        private val IDENTIFIER_TOKENS = TokenSet.create(
+            RsElementTypes.IDENTIFIER,
+            RsElementTypes.SELF,
+            RsElementTypes.SUPER,
+            RsElementTypes.CRATE,
+            RsElementTypes.CSELF
         )
     }
 }
@@ -436,11 +511,29 @@ private fun collectAvailableVars(groupDefinition: RsMacroBindingGroup): Set<Stri
     return vars.mapNotNullToSet { it.name }
 }
 
+fun RsPsiFactory.parseExpandedTextWithContext(call: RsMacroCall, expandedText: CharSequence): List<RsExpandedElement> =
+    when (call.context) {
+        is RsMacroExpr -> listOfNotNull(tryCreateExpression(expandedText))
+        is RsPatMacro -> listOfNotNull(tryCreatePat(expandedText))
+        is RsMacroType -> listOfNotNull(tryCreateType(expandedText))
+        else -> createFile(expandedText).childrenOfType<RsExpandedElement>()
+    }
+
+/** If [call] is previously expanded to [expandedFile], this function extract expanded elements from the file */
+fun getExpandedElementsFromMacroExpansion(call: RsMacroCall, expandedFile: RsFile): List<RsExpandedElement> =
+    when (call.context) {
+        is RsMacroExpr -> listOfNotNull(expandedFile.descendantOfTypeStrict<RsExpr>())
+        is RsPatMacro -> listOfNotNull(expandedFile.descendantOfTypeStrict<RsPat>())
+        is RsMacroType -> listOfNotNull(expandedFile.descendantOfTypeStrict<RsTypeReference>())
+        else -> expandedFile.childrenOfType<RsExpandedElement>()
+    }
+
 object MacroExpansionMarks {
     val failMatchPatternByToken = Testmark("failMatchPatternByToken")
     val failMatchPatternByExtraInput = Testmark("failMatchPatternByExtraInput")
     val failMatchPatternByBindingType = Testmark("failMatchPatternByBindingType")
     val failMatchGroupBySeparator = Testmark("failMatchGroupBySeparator")
+    val failMatchGroupTooFewElements = Testmark("failMatchGroupTooFewElements")
     val groupInputEnd1 = Testmark("groupInputEnd1")
     val groupInputEnd2 = Testmark("groupInputEnd2")
     val groupInputEnd3 = Testmark("groupInputEnd3")

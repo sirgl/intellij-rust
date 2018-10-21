@@ -7,7 +7,7 @@ package org.rust.ide.docs
 
 import com.intellij.psi.PsiManager
 import org.intellij.lang.annotations.Language
-import org.rust.lang.RsTestBase
+import org.rust.RsTestBase
 import org.rust.lang.core.psi.ext.RsNamedElement
 
 class RsResolveLinkTest : RsTestBase() {
@@ -231,6 +231,34 @@ class RsResolveLinkTest : RsTestBase() {
         struct Bar;
               //^
     """, "test_package/foo/bar/struct.foo.html")
+
+    fun `test fqn link with direct reexports`() = doTest("""
+        mod foo {
+            pub mod bar {
+                pub struct Baz;
+                          //X
+            }
+            pub use foo::bar::Baz;
+        }
+
+        struct Foo;
+              //^
+    """, "test_package/foo/struct.Baz.html")
+
+    fun `test fqn link with module reexports`() = doTest("""
+        mod foo {
+            pub mod bar {
+                pub mod baz {
+                    pub struct Baz;
+                              //X
+                }
+            }
+            pub use foo::bar::baz;
+        }
+
+        struct Foo;
+              //^
+    """, "test_package/foo/baz/struct.Baz.html")
 
     private fun doTest(@Language("Rust") code: String, link: String) {
         InlineFile(code)
