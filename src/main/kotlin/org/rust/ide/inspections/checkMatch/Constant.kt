@@ -15,20 +15,20 @@ sealed class Constant {
     operator fun compareTo(other: Constant): Int {
         return when {
             this is Constant.Boolean && other is Constant.Boolean -> when {
-                this.value == other.value -> 0
-                this.value && !other.value -> 1
+                value == other.value -> 0
+                value && !other.value -> 1
                 else -> -1
             }
-            this is Constant.Integer && other is Constant.Integer -> this.value.toLong().compareTo(other.value.toLong())
+            this is Constant.Integer && other is Constant.Integer -> value.toLong().compareTo(other.value.toLong())
 
-            this is Constant.Double && other is Constant.Double -> this.value.compareTo(other.value)
+            this is Constant.Double && other is Constant.Double -> value.compareTo(other.value)
 
-            this is Constant.String && other is Constant.String -> this.value.compareTo(other.value)
+            this is Constant.String && other is Constant.String -> value.compareTo(other.value)
 
-            this is Constant.Char && other is Constant.Char -> this.value.compareTo(other.value)
+            this is Constant.Char && other is Constant.Char -> value.compareTo(other.value)
 
             this is Constant.Path && other is Constant.Path -> {
-                val aR = this.value.path.reference.resolve()
+                val aR = value.path.reference.resolve()
                 val bR = other.value.path.reference.resolve()
                 if (aR?.equals(bR) == true) 0
                 else -1

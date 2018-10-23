@@ -14,7 +14,6 @@ sealed class Constructor {
 
     /// The constructor of all patterns that don't vary by constructor,
     /// e.g. struct patterns and fixed-length arrays.
-    //Single
     object Single : Constructor()
 
     /// Enum variants.
@@ -67,7 +66,6 @@ sealed class Constructor {
     }
 
     fun subTys(type: Ty): List<Ty> {
-        println("<top>.subTys(type = $type)")
         return when (type) {
             is TyTuple -> {
                 type.types
@@ -89,10 +87,8 @@ sealed class Constructor {
                         struct.fieldTypes
                     }
                     is Constructor.Variant -> variant.fieldTypes
-                    else -> {
-                        println("AAA NOTHING IN SUB TYS")
-                        listOf()
-                    }
+                    else -> listOf()
+
                 }
             }
             else -> listOf()
@@ -101,8 +97,6 @@ sealed class Constructor {
 }
 
 fun allConstructors(ty: Ty): List<Constructor> {
-    println("<top>.allConstructors(ty = $ty)")
-    // TODO check uninhabited
     return when {
         ty === TyBool -> listOf(true, false).map {
             Constructor.ConstantValue(Constant.Boolean(it))

@@ -14,9 +14,6 @@ class RsMatchCheckInspection : RsLocalInspectionTool() {
 
     override fun buildVisitor(holder: ProblemsHolder, isOnTheFly: Boolean) = object : RsVisitor() {
         override fun visitMatchExpr(o: RsMatchExpr) {
-
-            println("**************************************** NEW ****************************************")
-
             checkExhaustive(o, holder)
             checkUselessArm(o, holder)
         }
@@ -24,18 +21,14 @@ class RsMatchCheckInspection : RsLocalInspectionTool() {
     }
 }
 
-// ************************************************** ALGORITHM **************************************************
 
 fun checkUselessArm(match: RsMatchExpr, holder: ProblemsHolder) {
-    println("<top>.checkUselessArm(match = $match, holder = $holder)")
     val matrix = match.matrix
     for ((i, matchArm) in matrix.withIndex()) {
         if (i > 0) {
             val useful = isUseful(matrix.subList(0, i).map { it.patterns }, matchArm.patterns, false)
             if (!useful.isUseful()) {
-//                val matchArm = match.matchBody?.matchArmList?.get(i) ?: continue
-                val arm = matchArm.arm ?: continue
-                println("<top>.checkUselessArm arm ${arm.text} useless")
+                val arm = matchArm.arm
                 holder.registerProblem(
                     arm,
                     "Useless match arm",
@@ -48,12 +41,10 @@ fun checkUselessArm(match: RsMatchExpr, holder: ProblemsHolder) {
 }
 
 fun checkExhaustive(match: RsMatchExpr, holder: ProblemsHolder) {
-    println("<top>.checkExhaustive(match = $match, holder = $holder)")
     val matrix = match.matrix
     val useful = isUseful(matrix.map { it.patterns}, listOf(Pattern(TyUnknown, PatternKind.Wild)), true)
     when (useful) {
         is Usefulness.UsefulWithWitness -> {
-            println("<top>.checkExhaustive useful=${useful.witness}")
             holder.registerProblem(
                 match.match,
                 "Match must be exhaustive",
@@ -61,17 +52,11 @@ fun checkExhaustive(match: RsMatchExpr, holder: ProblemsHolder) {
                 AddWildcardArmFix(match, useful.witness.last().patterns.last())
             )
         }
-        Usefulness.Useless -> println("<top>.checkExhaustive useful=$useful")
     }
 }
 
 // Use algorithm from 3.1 http://moscova.inria.fr/~maranget/papers/warn/warn004.html
 fun isUseful(matrix: List<List<Pattern>?>, v: List<Pattern>, withWitness: Boolean): Usefulness {
-    println("<top>.isUseful(matrix = $matrix, v = $v)")
-
-    //// Base
-
-    // Base case if we are pattern-matching on ()
     if (v.isEmpty()) {
         return if (matrix.height == 0) {
             if (withWitness) Usefulness.UsefulWithWitness(listOf(Witness(mutableListOf())))
@@ -81,33 +66,25 @@ fun isUseful(matrix: List<List<Pattern>?>, v: List<Pattern>, withWitness: Boolea
         }
     }
 
-    //// Induction
     val type = matrix.mapNotNull { it?.get(0)?.ty }.find { it !== TyUnknown } ?: v[0].ty
 
     val constructors = v[0].constructors
 
-    println("<top>.isUseful expand first col: expanding ${v[0]} type=$type")
     return if (constructors != null) {
-        println("<top>.isUseful expanding constructors $constructors")
         constructors.map {
             isUsefulS(matrix, v, it, type, withWitness)
         }.find { it.isUseful() } ?: Usefulness.Useless
     } else {
-        println("<top>.isUseful expanding wildcard")
         val usedConstructors = matrix.flatMap { it?.get(0)?.constructors ?: emptyList() }
-        println("<top>.isUseful used constructors $usedConstructors")
 
 
         val allConstructors = allConstructors(type)
-        println("<top>.isUseful allConstructors $allConstructors")
 
         val missingConstructor = allConstructors.filter { !usedConstructors.contains(it) }
 
 
         val isPrivatelyEmpty = allConstructors.isEmpty()
         val isDeclaredNonexhaustive = (type as? TyAdt)?.isMarkedNonExhaustive ?: false
-        println("<top>.isUseful missing constructors $missingConstructor\tis privately empty $isPrivatelyEmpty, " +
-            "is declared nonexhaustive $isDeclaredNonexhaustive")
 
         val isNonExhaustive = isPrivatelyEmpty || isDeclaredNonexhaustive
 
@@ -151,10 +128,7 @@ fun isUseful(matrix: List<List<Pattern>?>, v: List<Pattern>, withWitness: Boolea
 }
 
 fun isUsefulS(matrix: List<List<Pattern>?>, v: List<Pattern>, constructor: Constructor, type: Ty, withWitness: Boolean): Usefulness {
-    println("<top>.isUsefulS(matrix = $matrix, v = $v, constructor = $constructor)")
-
     val newMatrix = matrix.mapNotNull { specializeRow(it, constructor, type) }
-    println("<top>.isUsefulS newMatrix=$newMatrix")
 
     val newV = specializeRow(v, constructor, type)
     return when (newV) {
@@ -170,9 +144,7 @@ fun isUsefulS(matrix: List<List<Pattern>?>, v: List<Pattern>, constructor: Const
 }
 
 fun specializeRow(row: List<Pattern>?, constructor: Constructor, type: Ty): List<Pattern>? {
-    println("<top>.specializeRow(row = $row, constructor = $constructor)")
-    row ?: return null // FIXME не уверен в надобности
-
+    row ?: return null
 
     val wildPatterns = MutableList(constructor.arity(type)) {
         Pattern(TyUnknown, PatternKind.Wild)
@@ -183,7 +155,6 @@ fun specializeRow(row: List<Pattern>?, constructor: Constructor, type: Ty): List
     val head: List<Pattern>? = when (kind) {
         is PatternKind.Variant -> {
             if (constructor == pat.constructors?.first()) {
-//                patternsForVariant(kind.subpatterns, constructor.arity(type))
                 wildPatterns.fillWithSubPatterns(kind.subpatterns)
                 wildPatterns
             } else {
@@ -191,17 +162,12 @@ fun specializeRow(row: List<Pattern>?, constructor: Constructor, type: Ty): List
             }
         }
         is PatternKind.Leaf -> {
-            /**
-             * Вот здесь непонятно. В соотвествии с алгоритом необходимо проверить равенство конструкторов
-             * (как в случае с вариантом). Но в компиляторе они так не делают. Очень странно. И непонятно.
-             */
-//            patternsForVariant(kind.subpatterns, constructor.arity(type))
             wildPatterns.fillWithSubPatterns(kind.subpatterns)
             wildPatterns
         }
         is PatternKind.Deref -> listOf(kind.subpattern)
         is PatternKind.Constant -> when (constructor) {
-            is Constructor.Slice -> TODO()
+            is Constructor.Slice -> TODO("Specialize row for slice pattern")
             else ->
                 if (constructor.coveredByRange(kind.value, kind.value, true)) listOf<Pattern>()
                 else null
@@ -232,78 +198,13 @@ fun specializeRow(row: List<Pattern>?, constructor: Constructor, type: Ty): List
                 }
                 is Constructor.ConstantValue -> {
                     //slice_pat_covered_by_constructor
-                    TODO()
+                    TODO("Check pattern slice and constructor value")
                 }
-                else -> error("")
+                else -> error("Bag. Wrong constructor")
             }
 
         }
         PatternKind.Wild, is PatternKind.Binding -> wildPatterns
     }
-    println("<top>.specializeRow head=$head")
     return head?.plus(row.subList(1, row.size))
-}
-
-fun sliceCoveredByConstructor(constructor: Constructor, prefix: List<Pattern>, slice: Pattern?, suffix: List<Pattern>): Boolean {
-    /*let data: &[u8] = match *ctor {
-        ConstantValue(const_val) => {
-            let val = match const_val.val {
-                ConstValue::Unevaluated(..) |
-                ConstValue::ByRef(..) => bug!("unexpected ConstValue: {:?}", const_val),
-                ConstValue::Scalar(val) | ConstValue::ScalarPair(val, _) => val,
-            };
-            if let Ok(ptr) = val.to_ptr() {
-                let is_array_ptr = const_val.ty
-                    .builtin_deref(true)
-                    .and_then(|t| t.ty.builtin_index())
-                    .map_or(false, |t| t == tcx.types.u8);
-                assert!(is_array_ptr);
-                tcx.alloc_map.lock().unwrap_memory(ptr.alloc_id).bytes.as_ref()
-            } else {
-                bug!("unexpected non-ptr ConstantValue")
-            }
-        }
-        _ => bug!()
-    };
-
-    let pat_len = prefix.len() + suffix.len();
-    if data.len() < pat_len || (slice.is_none() && data.len() > pat_len) {
-        return Ok(false);
-    }
-
-    for (ch, pat) in
-        data[..prefix.len()].iter().zip(prefix).chain(
-            data[data.len()-suffix.len()..].iter().zip(suffix))
-    {
-        match pat.kind {
-            box PatternKind::Constant { value } => {
-                let b = value.unwrap_bits(tcx, ty::ParamEnv::empty().and(pat.ty));
-                assert_eq!(b as u8 as u128, b);
-                if b as u8 != *ch {
-                    return Ok(false);
-                }
-            }
-            _ => {}
-        }
-    }
-    Ok(true)
-    */
-
-    val patternLength = prefix.size + suffix.size
-    return true
-
-}
-
-fun getLeafOrVariant(item: RsElement, subpatterns: List<FieldPattern>): PatternKind {
-    return when (item) {
-        is RsEnumVariant -> PatternKind.Variant(TyAdt.valueOf(item.parentEnum), item.index ?: error("Can't get index"), subpatterns)
-        is RsStructItem -> PatternKind.Leaf(subpatterns)
-        else -> error("Impossible case $item")
-    }
-}
-
-fun MutableList<Pattern>.fillWithSubPatterns(subpatterns: List<FieldPattern>) {
-    for (subpattern in subpatterns) {
-        this[subpattern.first] = subpattern.second
-    }
 }

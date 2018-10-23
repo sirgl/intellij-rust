@@ -47,7 +47,7 @@ data class Pattern(val ty: Ty, val kind: PatternKind) {
                     else -> ""
                 }
             }
-            is PatternKind.Range -> "${kind.lc}${if(kind.included) ".." else "..="}${kind.rc}"
+            is PatternKind.Range -> "${kind.lc}${if(kind.included) ".." else "..."}${kind.rc}"
             is PatternKind.Deref -> kind.toString()
             is PatternKind.Constant -> kind.value.toString()
             is PatternKind.Slice -> TODO()
@@ -62,7 +62,6 @@ data class Pattern(val ty: Ty, val kind: PatternKind) {
                 is PatternKind.Variant -> {
                     val enum = kind.ty.item as RsEnumItem
                     val variant = enum.enumBody?.enumVariantList?.get(kind.variantIndex) ?: return emptyList()
-//                    listOf(Constructor.Variant(variant, variant.index))
                     listOf(Constructor.Variant(variant, kind.variantIndex))
                 }
                 is PatternKind.Leaf, is PatternKind.Deref -> listOf(Constructor.Single)
@@ -77,9 +76,7 @@ data class Pattern(val ty: Ty, val kind: PatternKind) {
 typealias FieldPattern = Pair<Int, Pattern>
 
 fun lowerPattern(pat: RsPat): Pattern {
-    println("<top>.lowerPattern(pat = $pat)")
     val kind = pat.kind
     val ty = pat.type
-    println("<top>.lowerPattern ty=$ty, kind=$kind")
     return Pattern(ty, kind)
 }

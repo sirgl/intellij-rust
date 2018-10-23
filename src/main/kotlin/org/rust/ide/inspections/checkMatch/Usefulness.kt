@@ -7,9 +7,7 @@ class Witness(val patterns: MutableList<Pattern>) {
     override fun toString() = patterns.toString()
 
     fun pushWildCtor(constructor: Constructor, type: Ty) {
-        println("Witness.pushWildCtor(constructor = $constructor, type = $type)")
         val subPatterns = constructor.subTys(type)
-        println("Witness.pushWildCtor subPatterns=$subPatterns")
         for (ty in subPatterns) {
             patterns.add(Pattern(ty, PatternKind.Wild))
         }
@@ -17,7 +15,6 @@ class Witness(val patterns: MutableList<Pattern>) {
     }
 
     fun applyConstructors(constructor: Constructor, type: Ty) {
-        println("Witness.applyConstructors(constructor = $constructor, type = $type)")
         val arity = constructor.arity(type)
         val len = patterns.size
         val pats = patterns.subList(len - arity, len).reversed()
@@ -51,9 +48,7 @@ class Witness(val patterns: MutableList<Pattern>) {
                 }
             }
         }
-        println("Witness.applyConstructors pat=$pat")
         patterns.add(Pattern(type, pat))
-        println("Witness.applyConstructors patterns=$patterns")
     }
 }
 

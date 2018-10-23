@@ -8,14 +8,6 @@ sealed class PatternKind {
     object Wild : PatternKind()
 
     /// x, ref x, x @ P, etc
-    /*Binding {
-        mutability: Mutability,
-        name: ast::Name,
-        mode: BindingMode<'tcx>,
-        var: ast::NodeId,
-        ty: Ty<'tcx>,
-        subpattern: Option<Pattern<'tcx>>,
-    }*/
     data class Binding(val ty: Ty) : PatternKind()
 
 
