@@ -173,9 +173,9 @@ fun specializeRow(row: List<Pattern>?, constructor: Constructor, type: Ty): List
     println("<top>.specializeRow(row = $row, constructor = $constructor)")
     row ?: return null // FIXME не уверен в надобности
 
-    val wildPatterns = mutableListOf<Pattern>()
-    repeat(constructor.arity(type)) {
-        wildPatterns.add(Pattern(TyUnknown, PatternKind.Wild))
+
+    val wildPatterns = MutableList(constructor.arity(type)) {
+        Pattern(TyUnknown, PatternKind.Wild)
     }
 
     val pat = row[0]
@@ -216,39 +216,22 @@ fun specializeRow(row: List<Pattern>?, constructor: Constructor, type: Ty): List
             var prefix: List<Pattern> = listOf()
             var slice: Pattern? = null
             var suffix: List<Pattern> = listOf()
-            (kind as? PatternKind.Slice)?.let {
+            (kind as PatternKind.SliceField).let {
                 prefix = it.prefix
                 slice = it.slice
                 suffix = it.suffix
-            } ?: (kind as? PatternKind.Array)?.let {
-                prefix = it.prefix
-                slice = it.slice
-                suffix = it.suffix
-            } ?: error("")
+            }
 
             when (constructor) {
                 is Constructor.Slice -> {
                     val patternLength = prefix.size + suffix.size
                     val sliceCount = wildPatterns.size - patternLength
                     if(sliceCount == 0 || slice != null) {
-                       /* prefix.iter().chain(
-                            wild_patterns.iter()
-                                .map(|p| *p)
-                            .skip(prefix.len())
-                            .take(slice_count)
-                            .chain(suffix.iter())
-                        ).collect())*/
-                        prefix.plus(wildPatterns.subList(prefix.size - 1, sliceCount + prefix.size - 1)).plus(suffix)
+                        prefix + wildPatterns.subList(prefix.size - 1, sliceCount + prefix.size - 1) + suffix
                     } else null
                 }
                 is Constructor.ConstantValue -> {
-                    /*match slice_pat_covered_by_constructor(
-                        cx.tcx, pat.span, constructor, prefix, slice, suffix
-                    ) {
-                        Ok(true) => Some(vec![]),
-                        Ok(false) => None,
-                        Err(ErrorReported) => None
-                    }*/
+                    //slice_pat_covered_by_constructor
                     TODO()
                 }
                 else -> error("")

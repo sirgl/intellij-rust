@@ -32,12 +32,24 @@ sealed class PatternKind {
 
     data class Range(val lc: org.rust.ide.inspections.checkMatch.Constant, val rc: org.rust.ide.inspections.checkMatch.Constant, val included: Boolean) : PatternKind()
 
+
+    interface SliceField{
+        val prefix: List<Pattern>
+        val slice: Pattern?
+        val suffix: List<Pattern>
+    }
     /// matches against a slice, checking the length and extracting elements.
     /// irrefutable when there is a slice pattern and both `prefix` and `suffix` are empty.
     /// e.g. `&[ref xs..]`.
-    data class Slice(val prefix: List<Pattern>, val slice: Pattern?, val suffix: List<Pattern>) : PatternKind()
+    data class Slice(override val prefix: List<Pattern>,
+                     override val slice: Pattern?,
+                     override val suffix: List<Pattern>)
+        : PatternKind(), SliceField
 
     /// fixed match against an array, irrefutable
-    data class Array(val prefix: List<Pattern>, val slice: Pattern?, val suffix: List<Pattern>) : PatternKind()
+    data class Array(override val prefix: List<Pattern>,
+                     override val slice: Pattern?,
+                     override val suffix: List<Pattern>)
+        : PatternKind(), SliceField
 }
 

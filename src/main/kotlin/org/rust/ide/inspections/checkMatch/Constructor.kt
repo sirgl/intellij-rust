@@ -39,7 +39,11 @@ sealed class Constructor {
         is TyReference -> 1
         is TyAdt -> when (type.item) {
             is RsStructItem -> type.item.size
-            is RsEnumItem -> type.item.enumBody?.enumVariantList?.get((this as Variant).index)?.size ?: 0
+            is RsEnumItem -> {
+                val enumVariantList = type.item.enumBody?.enumVariantList
+                val index = (this as Variant).index
+                enumVariantList?.get(index)?.size ?: 0
+            }
             else -> error("bad adt pattern")
         }
         else -> 0
