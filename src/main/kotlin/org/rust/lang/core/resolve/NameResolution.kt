@@ -409,6 +409,7 @@ fun processLocalVariables(place: RsElement, processor: (RsPatBinding) -> Unit) {
  * Resolves an absolute path.
  */
 fun resolveStringPath(path: String, workspace: CargoWorkspace, project: Project): Pair<RsNamedElement, CargoWorkspace.Package>? {
+    check(!path.startsWith("::"))
     val parts = path.split("::", limit = 2)
     if (parts.size != 2) return null
     val pkg = workspace.findPackage(parts[0]) ?: run {
@@ -868,14 +869,14 @@ private fun processLexicalDeclarations(
     return false
 }
 
-private fun processNestedScopesUpwards(
+fun processNestedScopesUpwards(
     scopeStart: RsElement,
     processor: RsResolveProcessor,
     ns: Set<Namespace>,
     withPlainExternCrateItems: Boolean = true
 ): Boolean {
     val prevScope = mutableSetOf<String>()
-    walkUp(scopeStart, { it is RsMod }) { cameFrom, scope ->
+    if (walkUp(scopeStart, { it is RsMod }) { cameFrom, scope ->
         val currScope = mutableListOf<String>()
         val shadowingProcessor = { e: ScopeEntry ->
             e.name !in prevScope && run {
@@ -886,6 +887,8 @@ private fun processNestedScopesUpwards(
         if (processLexicalDeclarations(scope, cameFrom, ns, withPlainExternCrateItems, shadowingProcessor)) return@walkUp true
         prevScope.addAll(currScope)
         false
+    }) {
+        return true
     }
 
     val prelude = findPrelude(scopeStart)
