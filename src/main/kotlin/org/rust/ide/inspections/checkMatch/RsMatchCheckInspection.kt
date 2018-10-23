@@ -94,7 +94,6 @@ fun isUseful(matrix: List<List<Pattern>?>, v: List<Pattern>, withWitness: Boolea
         }.find { it.isUseful() } ?: Usefulness.Useless
     } else {
         println("<top>.isUseful expanding wildcard")
-//        val usedConstructors = matrix.map { it?.get(0)?.constructors }.flatMap { it ?: emptyList() }
         val usedConstructors = matrix.flatMap { it?.get(0)?.constructors ?: emptyList() }
         println("<top>.isUseful used constructors $usedConstructors")
 

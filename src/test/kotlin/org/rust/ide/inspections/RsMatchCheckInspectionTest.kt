@@ -4,24 +4,24 @@ import org.rust.ide.inspections.checkMatch.RsMatchCheckInspection
 
 class RsMatchCheckInspectionTest : RsInspectionsTestBase(RsMatchCheckInspection()) {
 
-    fun testMy() = checkByText("""
-        fn main() {
-//            enum ONE {
-//                A(i32, i32),
-//                B
-//            };
-//            let a = ONE::B;
+//    fun testMy() = checkByText("""
+//        fn main() {
+////            enum ONE {
+////                A(i32, i32),
+////                B
+////            };
+////            let a = ONE::B;
+////            match a {
+////                ONE::B => {}
+////                ONE::A(3, _) => {}
+////            }
+//            let a = 2;
 //            match a {
-//                ONE::B => {}
-//                ONE::A(3, _) => {}
+//                1 | 2 => {}
+//                2 => {}
 //            }
-            let a = 2;
-            match a {
-                1 | 2 => {}
-                2 => {}
-            }
-        }
-        """)
+//        }
+//        """)
 
     fun testUselessWildcard() = checkByText("""
         enum TEST {
@@ -179,6 +179,19 @@ class RsMatchCheckInspectionTest : RsInspectionsTestBase(RsMatchCheckInspection(
                 ONE::A(TWO::A) => {}
                 ONE::A(TWO::B(2)) => {}
                 ONE::B => {}
+            }
+        }
+    """)
+
+    fun testExhaustiveStruct() = checkByText("""
+        struct TEST {
+            a: i32,
+            b: char
+        }
+        fn main() {
+            let c = TEST { a: 2, b: 'c'};
+            match c {
+                TEST { a: _, b: _} => {}
             }
         }
     """)

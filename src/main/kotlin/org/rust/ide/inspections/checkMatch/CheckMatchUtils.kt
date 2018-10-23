@@ -107,7 +107,6 @@ internal val RsPat.type: Ty
             }
 
             is RsPatRef -> TODO()
-            is RsPatUniq -> TODO()
             is RsPatMacro -> TODO()
             is RsPatSlice -> TODO()
             else -> TODO()
@@ -182,7 +181,6 @@ internal val RsPat.kind: PatternKind
                 PatternKind.Range(a.expr.value, b.expr.value, (dotdotdot != null) || (dotdoteq != null))
             }
             is RsPatRef -> TODO()
-            is RsPatUniq -> TODO()
             is RsPatMacro -> TODO()
             is RsPatSlice -> {
                 TODO()

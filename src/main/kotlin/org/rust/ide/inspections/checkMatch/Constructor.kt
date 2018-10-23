@@ -4,7 +4,9 @@ import com.intellij.openapi.diagnostic.logger
 import org.rust.lang.core.psi.RsEnumItem
 import org.rust.lang.core.psi.RsEnumVariant
 import org.rust.lang.core.psi.RsStructItem
+import org.rust.lang.core.psi.ext.RsFieldsOwner
 import org.rust.lang.core.psi.ext.RsStructOrEnumItemElement
+import org.rust.lang.core.psi.ext.fieldTypes
 import org.rust.lang.core.types.ty.*
 import org.rust.lang.core.types.type
 
@@ -13,7 +15,7 @@ sealed class Constructor {
     /// The constructor of all patterns that don't vary by constructor,
     /// e.g. struct patterns and fixed-length arrays.
     //Single
-    class Single : Constructor()
+    object Single : Constructor()
 
     /// Enum variants.
     data class Variant(val variant: RsEnumVariant, val index: Int) : Constructor()
@@ -55,7 +57,7 @@ sealed class Constructor {
                 else ((end < to) || (!included && to == end)) && (start >= from)
 
             }
-            Constructor.Single() -> true
+            Constructor.Single -> true
             else -> error("Impossible case")
         }
     }
@@ -78,14 +80,11 @@ sealed class Constructor {
                 // TODO check box
                 // TODO ok?
                 when (this) {
-                    is Constructor.Single -> TODO()
-                    is Constructor.Variant -> {
-                        variant.tupleFields?.let {
-                            it.tupleFieldDeclList.map { it.typeReference.type }
-                        } ?: variant.blockFields?.let {
-                            it.fieldDeclList.mapNotNull { it.typeReference?.type }
-                        } ?: listOf()
+                    is Constructor.Single -> {
+                        val struct = type.item as RsStructItem
+                        struct.fieldTypes
                     }
+                    is Constructor.Variant -> variant.fieldTypes
                     else -> {
                         println("AAA NOTHING IN SUB TYS")
                         listOf()
@@ -111,7 +110,7 @@ fun allConstructors(ty: Ty): List<Constructor> {
         ty is TyArray && ty.size != null -> TODO()
         ty is TyArray || ty is TySlice -> TODO()
 
-        else -> listOf(Constructor.Single())
+        else -> listOf(Constructor.Single)
     }
 }
 

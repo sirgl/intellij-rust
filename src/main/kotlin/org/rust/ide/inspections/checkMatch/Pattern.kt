@@ -65,7 +65,7 @@ data class Pattern(val ty: Ty, val kind: PatternKind) {
 //                    listOf(Constructor.Variant(variant, variant.index))
                     listOf(Constructor.Variant(variant, kind.variantIndex))
                 }
-                is PatternKind.Leaf, is PatternKind.Deref -> listOf(Constructor.Single())
+                is PatternKind.Leaf, is PatternKind.Deref -> listOf(Constructor.Single)
                 is PatternKind.Constant -> listOf(Constructor.ConstantValue(kind.value))
                 is PatternKind.Range -> listOf(Constructor.ConstantRange(kind.lc, kind.rc, kind.included))
                 is PatternKind.Slice -> TODO()
