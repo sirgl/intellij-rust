@@ -3,12 +3,30 @@ package org.rust.ide.inspections.checkMatch
 import org.rust.lang.core.psi.RsPathExpr
 
 sealed class Constant {
-    data class Boolean(val value: kotlin.Boolean) : Constant()
-    data class Integer(val value: Number) : Constant()
-    data class Double(val value: kotlin.Double) : Constant()
-    data class String(val value: kotlin.String) : Constant()
-    data class Char(val value: kotlin.String) : Constant()
-    data class Path(val value: RsPathExpr) : Constant()
+    data class Boolean(val value: kotlin.Boolean) : Constant() {
+        override fun toString() = value.toString()
+    }
+
+    data class Integer(val value: Number) : Constant() {
+        override fun toString() = value.toString()
+    }
+
+    data class Double(val value: kotlin.Double) : Constant() {
+        override fun toString() = value.toString()
+    }
+
+    data class String(val value: kotlin.String) : Constant() {
+        override fun toString() = value
+    }
+
+    data class Char(val value: kotlin.String) : Constant() {
+        override fun toString() = value
+    }
+
+    data class Path(val value: RsPathExpr) : Constant() {
+        override fun toString() = value.toString()
+    }
+
     object Unknown : Constant()
 
 

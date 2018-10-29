@@ -174,9 +174,9 @@ internal val RsPat.kind: PatternKind
 
 
 internal fun RsFieldsOwner.indexOf(pat: RsPatField): Int {
-    val identifier = pat.identifier
-    return namedFields.map { it.identifier }.indexOfFirst {
-        it.text == identifier?.text
+    val identifier = pat.identifier?.text ?: pat.text
+    return namedFields.map { it.identifier.text }.indexOfFirst {
+        it == identifier
     }
 }
 

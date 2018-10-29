@@ -14,8 +14,10 @@ class RsMatchCheckInspection : RsLocalInspectionTool() {
 
     override fun buildVisitor(holder: ProblemsHolder, isOnTheFly: Boolean) = object : RsVisitor() {
         override fun visitMatchExpr(o: RsMatchExpr) {
-            checkExhaustive(o, holder)
-            checkUselessArm(o, holder)
+            try {
+                checkUselessArm(o, holder)
+                checkExhaustive(o, holder)
+            } catch (todo: NotImplementedError) {}
         }
 
     }

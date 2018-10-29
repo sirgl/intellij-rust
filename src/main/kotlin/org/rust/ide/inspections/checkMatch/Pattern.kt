@@ -48,7 +48,7 @@ data class Pattern(val ty: Ty, val kind: PatternKind) {
                 }
             }
             is PatternKind.Range -> "${kind.lc}${if(kind.included) ".." else "..."}${kind.rc}"
-            is PatternKind.Deref -> kind.toString()
+            is PatternKind.Deref -> "&${kind.subpattern}"
             is PatternKind.Constant -> kind.value.toString()
             is PatternKind.Slice -> TODO()
             is PatternKind.Array -> TODO()
