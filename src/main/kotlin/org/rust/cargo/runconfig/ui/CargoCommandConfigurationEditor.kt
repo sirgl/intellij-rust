@@ -44,6 +44,9 @@ class CargoCommandConfigurationEditor(private val project: Project) : SettingsEd
     private fun currentWorkspace(): CargoWorkspace? =
         CargoCommandConfiguration.findCargoProject(project, command.text, currentWorkingDirectory)?.workspace
 
+    private val allCargoProjects: List<CargoProject> =
+        project.cargoProjects.allProjects.sortedBy { it.presentableName }
+
     private val command = CargoCommandLineEditor(project, { this.currentWorkspace() })
 
     private val backtraceMode = ComboBox<BacktraceMode>().apply {
@@ -74,9 +77,7 @@ class CargoCommandConfigurationEditor(private val project: Project) : SettingsEd
                 setText(value?.presentableName)
             }
         }
-        project.cargoProjects.allProjects
-            .sortedBy { it.presentableName }
-            .forEach { addItem(it) }
+        allCargoProjects.forEach { addItem(it) }
 
         addItemListener {
             setWorkingDirectoryFromSelectedProject()
@@ -93,13 +94,12 @@ class CargoCommandConfigurationEditor(private val project: Project) : SettingsEd
     }
 
     private val environmentVariables = EnvironmentVariablesComponent()
-    private val nocapture = CheckBox("Show stdout/stderr in tests", true)
-
+    private val allFeatures = CheckBox("Use all features in tests", true)
 
     override fun resetEditorFrom(configuration: CargoCommandConfiguration) {
         channel.selectedIndex = configuration.channel.index
         command.text = configuration.command
-        nocapture.isSelected = configuration.nocapture
+        allFeatures.isSelected = configuration.allFeatures
         backtraceMode.selectedIndex = configuration.backtrace.index
         workingDirectory.component.text = configuration.workingDirectory?.toString() ?: ""
         environmentVariables.envData = configuration.env
@@ -108,7 +108,7 @@ class CargoCommandConfigurationEditor(private val project: Project) : SettingsEd
             cargoProject.selectedIndex = -1
         } else {
             val projectForWd = project.cargoProjects.findProjectForFile(vFile)
-            cargoProject.selectedIndex = project.cargoProjects.allProjects.indexOf(projectForWd)
+            cargoProject.selectedIndex = allCargoProjects.indexOf(projectForWd)
         }
     }
 
@@ -118,7 +118,7 @@ class CargoCommandConfigurationEditor(private val project: Project) : SettingsEd
 
         configuration.channel = configChannel
         configuration.command = command.text
-        configuration.nocapture = nocapture.isSelected
+        configuration.allFeatures = allFeatures.isSelected
         configuration.backtrace = BacktraceMode.fromIndex(backtraceMode.selectedIndex)
         configuration.workingDirectory = currentWorkingDirectory
         configuration.env = environmentVariables.envData
@@ -138,7 +138,7 @@ class CargoCommandConfigurationEditor(private val project: Project) : SettingsEd
             channel()
         }
 
-        row { nocapture() }
+        row { allFeatures() }
 
         row(environmentVariables.label) { environmentVariables.apply { makeWide() }() }
         row(workingDirectory.label) {

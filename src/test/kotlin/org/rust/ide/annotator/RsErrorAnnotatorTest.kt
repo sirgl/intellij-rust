@@ -5,7 +5,11 @@
 
 package org.rust.ide.annotator
 
-class RsErrorAnnotatorTest : RsAnnotatorTestBase() {
+import org.rust.MockEdition
+import org.rust.MockRustcVersion
+import org.rust.cargo.project.workspace.CargoWorkspace
+
+class RsErrorAnnotatorTest : RsAnnotationTestBase() {
     override val dataPath = "org/rust/ide/annotator/fixtures/errors"
 
     fun `test invalid module declarations`() = doTest("helper.rs")
@@ -432,6 +436,15 @@ class RsErrorAnnotatorTest : RsAnnotatorTestBase() {
         fn foo(a: &'static str) {}
     """)
 
+    fun `test reserved lifetime names E0262`() = checkErrors("""
+        fn foo<<error descr="`'_` is a reserved lifetime name [E0262]">'_</error>>(x: &'_ str) {}
+        fn bar<<error descr="`'static` is a reserved lifetime name [E0262]">'static</error>>(x: &'static str) {}
+        struct Str<<error>'static</error>> { a: &'static u32 }
+        impl<<error>'static</error>> Str<'static> {}
+        enum En<<error>'static</error>> { A(&'static str) }
+        trait Tr<<error>'static</error>> {}
+    """)
+
     fun `test lifetime name duplication in generic params E0263`() = checkErrors("""
         fn foo<'a, 'b>(x: &'a str, y: &'b str) { }
         struct Str<'a, 'b> { a: &'a u32, b: &'b f64 }
@@ -467,6 +480,18 @@ class RsErrorAnnotatorTest : RsAnnotatorTestBase() {
         impl T for () {
             fn foo() {}
             fn <error descr="Method `quux` is not a member of trait `T` [E0407]">quux</error>() {}
+        }
+    """)
+
+    fun `test no E0407 for method defined with a macro`() = checkErrors("""
+        macro_rules! foo {
+            ($ i:ident, $ j:ty) => { fn $ i(&self) -> $ j { unimplemented!() } }
+        }
+        trait T {
+            foo!(foo, ());
+        }
+        impl T for () {
+            fn foo(&self) {}
         }
     """)
 
@@ -1122,5 +1147,88 @@ class RsErrorAnnotatorTest : RsAnnotatorTestBase() {
         trait Foo {
             fn foo() -> Self;
         }
+    """)
+
+    @MockRustcVersion("1.27.1")
+    fun `test crate visibility feature E0658`() = checkErrors("""
+        <error descr="`crate` visibility modifier is experimental [E0658]">crate</error> struct Foo;
+    """)
+
+    @MockRustcVersion("1.29.0-nightly")
+    fun `test crate visibility feature E0658 2`() = checkErrors("""
+        <error descr="`crate` visibility modifier is experimental [E0658]">crate</error> struct Foo;
+    """)
+
+    @MockRustcVersion("1.29.0-nightly")
+    fun `test crate visibility feature E0658 3`() = checkErrors("""
+        #![feature(crate_visibility_modifier)]
+
+        crate struct Foo;
+    """)
+
+    @MockRustcVersion("1.29.0-nightly")
+    fun `test crate visibility feature E0658 4`() = checkErrors("""
+        crate struct Foo;
+
+        mod foo {
+            #![feature(crate_visibility_modifier)]
+        }
+    """)
+
+    fun `test parenthesized lifetime bounds`() = checkErrors("""
+        fn foo<'a, T: <error descr="Parenthesized lifetime bounds are not supported">('a)</error>>(t: T) {
+            unimplemented!();
+        }
+    """)
+
+    @MockEdition(CargoWorkspace.Edition.EDITION_2018)
+    fun `test crate keyword not at the beginning E0433`() = checkErrors("""
+        use crate::foo::<error descr="`crate` in paths can only be used in start position [E0433]">crate</error>::Foo;
+    """)
+
+    @MockEdition(CargoWorkspace.Edition.EDITION_2018)
+    fun `test crate keyword not at the beginning in use group E0433`() = checkErrors("""
+        use crate::foo::{<error descr="`crate` in paths can only be used in start position [E0433]">crate</error>::Foo};
+    """)
+
+    @MockRustcVersion("1.28.0")
+    fun `test crate in path feature E0658`() = checkErrors("""
+        mod foo {
+            pub struct Foo;
+        }
+
+        use <error descr="`crate` in paths is experimental [E0658]">crate</error>::foo::Foo;
+    """)
+
+    @MockRustcVersion("1.29.0-nightly")
+    fun `test crate in path feature E0658 2`() = checkErrors("""
+        mod foo {
+            pub struct Foo;
+        }
+
+        use <error descr="`crate` in paths is experimental [E0658]">crate</error>::foo::Foo;
+    """)
+
+    @MockEdition(CargoWorkspace.Edition.EDITION_2018)
+    fun `test crate in path feature E0658 3`() = checkErrors("""
+        mod foo {
+            pub struct Foo;
+        }
+
+        use crate::foo::Foo;
+    """)
+
+    fun `test E0404 expected trait`() = checkErrors("""
+        struct S;
+        enum E {}
+        type T = S;
+        mod a {}
+        trait Trait {}
+        impl <error descr="Expected trait, found struct `S` [E0404]">S</error> for S {}
+        impl <error descr="Expected trait, found enum `E` [E0404]">E</error> for S {}
+        impl <error descr="Expected trait, found type alias `T` [E0404]">T</error> for S {}
+        impl <error descr="Expected trait, found module `a` [E0404]">a</error> for S {}
+        fn foo<A: <error descr="Expected trait, found struct `S` [E0404]">S</error>>() {}
+        impl Trait for S {}
     """)
 }

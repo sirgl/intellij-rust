@@ -14,7 +14,9 @@ import org.rust.ide.utils.findStatementsInRange
 import org.rust.lang.core.psi.*
 import org.rust.lang.core.psi.ext.*
 import org.rust.lang.core.resolve.ImplLookup
-import org.rust.lang.core.types.ty.*
+import org.rust.lang.core.types.ty.Ty
+import org.rust.lang.core.types.ty.TyReference
+import org.rust.lang.core.types.ty.TyTuple
 import org.rust.lang.core.types.type
 
 class ReturnValue(val expression: String?, val type: Ty) {
@@ -171,10 +173,7 @@ class RsExtractFunctionConfig private constructor(
                         operatorType == UnaryOperator.REF || operatorType == UnaryOperator.REF_MUT
                     }
                     val requiredBorrowing = hasRefOperator || result.any { it.element.textOffset > end }
-                        // We manually check primitive types because of ImplLookup.isCopy does not support them
-                        && it.type != TyBool && it.type != TyChar && it.type !is TyInteger && it.type !is TyFloat
-                        && it.type !is TyReference
-                        && !implLookup.isCopy(it.type)
+                        && it.type !is TyReference && !implLookup.isCopy(it.type)
 
                     val requiredMutableValue = it.mutability.isMut && targets.any {
                         if (it.element.ancestorStrict<RsValueArgumentList>() == null) return@any false
@@ -220,7 +219,7 @@ private fun Ty.types(): Set<Ty> {
 
     fun collect(type: Ty) {
         types.add(type)
-        type.typeParameterValues.values.forEach { collect(it) }
+        type.typeParameterValues.types.forEach { collect(it) }
     }
 
     collect(this)

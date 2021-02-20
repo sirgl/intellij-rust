@@ -7,7 +7,7 @@ package org.rust.lang.refactoring.implementMembers
 
 import junit.framework.TestCase
 import org.intellij.lang.annotations.Language
-import org.rust.lang.RsTestBase
+import org.rust.RsTestBase
 import org.rust.lang.core.psi.RsFile
 import org.rust.lang.refactoring.introduceVariable.findCandidateExpressionsToExtract
 import org.rust.lang.refactoring.introduceVariable.suggestedNames
@@ -41,12 +41,12 @@ class RsNameSuggestionsKtTest : RsTestBase() {
 
 
     fun `test function names`() = doTest("""
-        fn foo(a: i32, veryCoolVariableName: i32) -> i32 {
+        fn get_foo(a: i32, veryCoolVariableName: i32) -> i32 {
             a + b
         }
 
         fn bar() {
-            f/*caret*/oo(4, 10 + 2)
+            get_f/*caret*/oo(4, 10 + 2)
         }
     """,
         listOf("i", "foo")

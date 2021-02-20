@@ -10,7 +10,7 @@ class RsReassignImmutableInspectionTest : RsInspectionsTestBase(RsReassignImmuta
     fun `test E0384 reassign immutable binding`() = checkByText("""
         fn main() {
             let x = 5;
-            <error descr="Re-assignment of immutable variable [E0384]">x = 3</error>;
+            <error descr="Cannot assign twice to immutable variable [E0384]">x = 3</error>;
         }
     """)
 
@@ -72,7 +72,7 @@ class RsReassignImmutableInspectionTest : RsInspectionsTestBase(RsReassignImmuta
     fun `test E0384 in pattern`() = checkByText("""
         fn main() {
             let (x, mut y) = (92, 62);
-            <error descr="Re-assignment of immutable variable [E0384]">x = 42</error>;
+            <error descr="Cannot assign twice to immutable variable [E0384]">x = 42</error>;
             y = 42;
         }
     """)
@@ -85,13 +85,13 @@ class RsReassignImmutableInspectionTest : RsInspectionsTestBase(RsReassignImmuta
 
     fun `test E0384 immutable used at mutable function definition`() = checkByText("""
         fn test(test: i32) {
-            <error descr="Re-assignment of immutable variable [E0384]">test = 10</error>;
+            <error descr="Cannot assign twice to immutable variable [E0384]">test = 10</error>;
         }
     """)
 
     fun `test E0384 immutable used at mutable function definition (pattern)`() = checkByText("""
         fn foo((x, y): (i32, i32)) {
-            <error descr="Re-assignment of immutable variable [E0384]">x = 92</error>;
+            <error descr="Cannot assign twice to immutable variable [E0384]">x = 92</error>;
         }
     """)
 
@@ -103,7 +103,7 @@ class RsReassignImmutableInspectionTest : RsInspectionsTestBase(RsReassignImmuta
 
     fun `test E0384 immutable used at mutable function definition (pattern) 2`() = checkByText("""
         fn foo((x, y): (i32, i32)) {
-            <error descr="Re-assignment of immutable variable [E0384]">y = 92</error>;
+            <error descr="Cannot assign twice to immutable variable [E0384]">y = 92</error>;
         }
     """)
 
@@ -113,13 +113,21 @@ class RsReassignImmutableInspectionTest : RsInspectionsTestBase(RsReassignImmuta
         }
     """)
 
-    fun `test E0384 no error in for loop over mutable`() = checkByText("""
-        struct Foo { a: u32 }
+    fun `test E0384 mut struct field`() = checkByText("""
+        struct Foo { a: i32 }
         fn main() {
-            let mut vec: Vec<Foo> = Vec::new();
-            for v in &mut vec {
-                v.a = 15;           // Must not be annotated
-            }
+            let mut foo = Foo { a: 1 };
+            let x = &mut foo;
+            x.a = 2;
+        }
+    """)
+
+    fun `test E0384 reassign ref mut`() = checkByText("""
+        fn main() {
+            let mut a = 5;
+            let mut b = 6;
+            let ref mut test = a;
+            <error>test<caret> = &mut b</error>;
         }
     """)
 
@@ -168,20 +176,4 @@ class RsReassignImmutableInspectionTest : RsInspectionsTestBase(RsReassignImmuta
             test = 32;
         }
     """)
-
-    fun `test E0384 fix let ref at reassign `() = checkFixByText("Make `test` mutable", """
-        fn main() {
-            let mut a = 5;
-            let mut b = 6;
-            let ref test = a;
-            <error>test<caret> = &b</error>;
-        }
-            """, """
-        fn main() {
-            let mut a = 5;
-            let mut b = 6;
-            let ref mut test = a;
-            test = &b;
-        }
-            """)
 }

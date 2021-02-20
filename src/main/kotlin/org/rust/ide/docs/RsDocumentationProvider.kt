@@ -7,8 +7,10 @@ package org.rust.ide.docs
 
 import com.intellij.codeInsight.documentation.DocumentationManagerUtil
 import com.intellij.lang.documentation.AbstractDocumentationProvider
+import com.intellij.lang.documentation.DocumentationMarkup
 import com.intellij.psi.PsiElement
 import com.intellij.psi.PsiManager
+import org.rust.cargo.project.workspace.PackageOrigin.STDLIB
 import org.rust.ide.presentation.escaped
 import org.rust.ide.presentation.presentableQualifiedName
 import org.rust.ide.presentation.presentationInfo
@@ -16,63 +18,144 @@ import org.rust.lang.core.psi.*
 import org.rust.lang.core.psi.ext.*
 import org.rust.lang.core.types.type
 import org.rust.lang.doc.documentationAsHtml
+import org.rust.openapiext.Testmark
+import org.rust.openapiext.isUnitTestMode
+import org.rust.stdext.joinToWithBuffer
 
 class RsDocumentationProvider : AbstractDocumentationProvider() {
 
-    override fun generateDoc(element: PsiElement, originalElement: PsiElement?): String? = when (element) {
-        is RsTypeParameter -> pre { generateDoc(element) }
-        is RsDocAndAttributeOwner -> generateDoc(element)
-        is RsPatBinding -> pre { generateDoc(element) }
-        else -> null
-    }
-
-    override fun getQuickNavigateInfo(element: PsiElement, originalElement: PsiElement?): String? = when (element) {
-        is RsPatBinding -> generateDoc(element)
-        is RsTypeParameter -> generateDoc(element)
-        is RsConstant -> element.presentationInfo?.quickDocumentationText
-        is RsMod -> element.presentationInfo?.quickDocumentationText
-        is RsItemElement -> element.header(false) + element.signature(false)
-        is RsNamedElement -> element.presentationInfo?.quickDocumentationText
-        else -> null
-    }
-
-    private fun generateDoc(element: RsDocAndAttributeOwner): String? {
-        val doc = element.documentationAsHtml() ?: ""
-        return element.header(true) + element.signature(true) + doc
-    }
-
-    private fun generateDoc(element: RsPatBinding): String? {
-        val presentationInfo = element.presentationInfo ?: return null
-        val type = element.type.toString().escaped
-        return "${presentationInfo.type} <b>${presentationInfo.name}</b>: $type"
-    }
-
-    private fun generateDoc(element: RsTypeParameter): String? {
-        val name = element.name ?: return null
-        return buildString {
-            append("type parameter ")
-            b { it += name }
-            val typeBounds = element.bounds
-            if (typeBounds.isNotEmpty()) {
-                typeBounds.joinTo(this, " + ", ": ") { generateDocumentation(it) }
-            }
-            element.typeReference?.generateDocumentation(this, " = ")
+    override fun generateDoc(element: PsiElement, originalElement: PsiElement?): String? = buildString {
+        when (element) {
+            is RsTypeParameter -> definition(this) { generateDoc(element, it) }
+            is RsDocAndAttributeOwner -> generateDoc(element, this)
+            is RsPatBinding -> definition(this) { generateDoc(element, it) }
+            else -> return null
         }
+    }
+
+    override fun getQuickNavigateInfo(element: PsiElement, originalElement: PsiElement?): String? = buildString {
+        when (element) {
+            is RsPatBinding -> generateDoc(element, this)
+            is RsTypeParameter -> generateDoc(element, this)
+            is RsConstant -> this += element.presentationInfo?.quickDocumentationText
+            is RsMod -> this += element.presentationInfo?.quickDocumentationText
+            is RsItemElement,
+            is RsMacro -> {
+                (element as RsDocAndAttributeOwner).header(this)
+                element.signature(this)
+            }
+            is RsNamedElement -> this += element.presentationInfo?.quickDocumentationText
+            else -> return null
+        }
+    }
+
+    private fun generateDoc(element: RsDocAndAttributeOwner, buffer: StringBuilder) {
+        definition(buffer) {
+            element.header(it)
+            element.signature(it)
+        }
+        val text = element.documentationAsHtml()
+        if (text.isNullOrEmpty()) return
+        buffer += "\n" // Just for more pretty html text representation
+        buffer += DocumentationMarkup.CONTENT_START
+        buffer += text
+        buffer += DocumentationMarkup.CONTENT_END
+    }
+
+    private fun generateDoc(element: RsPatBinding, buffer: StringBuilder) {
+        val presentationInfo = element.presentationInfo ?: return
+        val type = element.type.toString().escaped
+        buffer += presentationInfo.type
+        buffer += " "
+        buffer.b { it += presentationInfo.name }
+        buffer += ": "
+        buffer += type
+    }
+
+    private fun generateDoc(element: RsTypeParameter, buffer: StringBuilder) {
+        val name = element.name ?: return
+        buffer += "type parameter "
+        buffer.b { it += name }
+        val typeBounds = element.bounds
+        if (typeBounds.isNotEmpty()) {
+            typeBounds.joinToWithBuffer(buffer, " + ", ": ") { generateDocumentation(it) }
+        }
+        element.typeReference?.generateDocumentation(buffer, " = ")
     }
 
     override fun getDocumentationElementForLink(psiManager: PsiManager, link: String, context: PsiElement): PsiElement? {
         if (context !is RsElement) return null
-        return RsCodeFragmentFactory(context.project)
-            .createPath(link, context)
-            ?.reference
-            ?.resolve()
+        val qualifiedName = RsQualifiedName.from(link)
+        return if (qualifiedName == null) {
+            RsCodeFragmentFactory(context.project)
+                .createPath(link, context)
+                ?.reference
+                ?.resolve()
+        } else {
+            qualifiedName.findPsiElement(psiManager, context)
+        }
+    }
+
+    override fun getUrlFor(element: PsiElement, originalElement: PsiElement?): List<String> {
+        if (element !is RsDocAndAttributeOwner ||
+            element !is RsQualifiedNamedElement ||
+            !element.hasExternalDocumentation) return emptyList()
+
+        val cargoPackage = element.containingCargoPackage
+        val pagePrefix = when (cargoPackage?.origin) {
+            STDLIB -> STD_DOC_HOST
+            else -> if (isUnitTestMode) TEST_HOST else return emptyList()
+        }
+
+        val pagePath = RsQualifiedName.from(element)?.toUrlPath() ?: return emptyList()
+        return listOf("$pagePrefix/$pagePath")
+    }
+
+    private val RsDocAndAttributeOwner.hasExternalDocumentation: Boolean get() {
+        // items with #[doc(hidden)] attribute don't have external documentation
+        if (queryAttributes.isDocHidden) {
+            Testmarks.docHidden.hit()
+            return false
+        }
+
+        // private items don't have external documentation
+        if (this is RsVisible) {
+            if (this is RsAbstractable) {
+                val owner = owner
+                // items in
+                if ((!owner.isImplOrTrait || owner.isInherentImpl) && !isPublic) return false
+            } else {
+                if (!isPublic) return false
+            }
+        }
+
+        // macros without #[macro_export] are not public and don't have external documentation
+        if (this is RsMacro && !hasMacroExport) {
+            Testmarks.notExportedMacro.hit()
+            return false
+        }
+        // TODO: we should take into account real path of item for user, i.e. take into account reexports
+        // instead of already resolved item path
+        return containingMod.superMods.all { it.isPublic }
+    }
+
+    companion object {
+        const val STD_DOC_HOST = "https://doc.rust-lang.org"
+        const val TEST_HOST = "test://doc-host.org"
+    }
+
+    object Testmarks {
+        val docHidden = Testmark("docHidden")
+        val notExportedMacro = Testmark("notExportedMacro")
     }
 }
 
-private fun RsDocAndAttributeOwner.header(usePreTag: Boolean): String {
+private fun RsDocAndAttributeOwner.header(buffer: StringBuilder) {
     val rawLines = when (this) {
         is RsFieldDecl -> listOfNotNull((parent?.parent as? RsDocAndAttributeOwner)?.presentableQualifiedName)
-        is RsStructOrEnumItemElement, is RsTraitItem -> listOfNotNull(presentableQualifiedModName)
+        is RsStructOrEnumItemElement,
+        is RsTraitItem,
+        is RsMacro -> listOfNotNull(presentableQualifiedModName)
         is RsAbstractable -> {
             val owner = owner
             when (owner) {
@@ -84,20 +167,13 @@ private fun RsDocAndAttributeOwner.header(usePreTag: Boolean): String {
         }
         else -> listOfNotNull(presentableQualifiedName)
     }
-    val startTag = if (usePreTag) "<pre>" else ""
-    val endTag = if (usePreTag) "</pre>" else ""
-    return when (rawLines.size) {
-        0 -> ""
-        1 -> "$startTag${rawLines[0]}$endTag\n"
-        else -> {
-            val firstLine = "$startTag${rawLines[0]}$endTag\n"
-            val additionalLines = rawLines.drop(1).joinToString("<br>", startTag, endTag)
-            "$firstLine$additionalLines\n"
-        }
+    rawLines.joinTo(buffer, "<br>")
+    if (rawLines.isNotEmpty()) {
+        buffer += "\n"
     }
 }
 
-private fun RsDocAndAttributeOwner.signature(usePreTag: Boolean): String {
+private fun RsDocAndAttributeOwner.signature(builder: StringBuilder) {
     val rawLines = when (this) {
         is RsFieldDecl -> listOfNotNull(presentationInfo?.signatureText)
         is RsFunction -> {
@@ -130,11 +206,10 @@ private fun RsDocAndAttributeOwner.signature(usePreTag: Boolean): String {
                 listOf(buffer.toString()) + whereClause?.documentationText.orEmpty()
             } else emptyList()
         }
+        is RsMacro -> listOf("macro <b>$name</b>")
         else -> emptyList()
     }
-    val startTag = if (usePreTag) "<pre>" else ""
-    val endTag = if (usePreTag) "</pre>" else ""
-    return if (rawLines.isNotEmpty()) rawLines.joinToString("<br>", startTag, "$endTag\n") else ""
+    rawLines.joinTo(builder, "<br>")
 }
 
 private val RsImplItem.declarationText: List<String> get() {
@@ -226,10 +301,10 @@ private fun PsiElement.generateDocumentation(buffer: StringBuilder, prefix: Stri
             typeReference?.generateDocumentation(buffer, " = ")
         }
         is RsTraitRef -> path.generateDocumentation(buffer)
-        is RsLifetimeParamBounds -> lifetimeList.joinTo(buffer, " + ", ": ") { generateDocumentation(it) }
+        is RsLifetimeParamBounds -> lifetimeList.joinToWithBuffer(buffer, " + ", ": ") { generateDocumentation(it) }
         is RsTypeParamBounds -> {
             if (polyboundList.isNotEmpty()) {
-                polyboundList.joinTo(buffer, " + ", ": ") { generateDocumentation(it) }
+                polyboundList.joinToWithBuffer(buffer, " + ", ": ") { generateDocumentation(it) }
             }
         }
         // TODO: support 'for lifetimes'
@@ -240,11 +315,11 @@ private fun PsiElement.generateDocumentation(buffer: StringBuilder, prefix: Stri
             (bound.lifetime ?: bound.traitRef)?.generateDocumentation(buffer)
         }
         is RsTypeArgumentList -> (lifetimeList + typeReferenceList + assocTypeBindingList)
-            .joinTo(buffer, ", ", "&lt;", "&gt;") { generateDocumentation(it) }
+            .joinToWithBuffer(buffer, ", ", "&lt;", "&gt;") { generateDocumentation(it) }
         is RsTypeParameterList -> (lifetimeParameterList + typeParameterList)
-            .joinTo(buffer, ", ", "&lt;", "&gt;") { generateDocumentation(it) }
+            .joinToWithBuffer(buffer, ", ", "&lt;", "&gt;") { generateDocumentation(it) }
         is RsValueParameterList -> (listOfNotNull(selfParameter) + valueParameterList + listOfNotNull(dotdotdot))
-            .joinTo(buffer, ", ", "(", ")") { generateDocumentation(it) }
+            .joinToWithBuffer(buffer, ", ", "(", ")") { generateDocumentation(it) }
         is RsLifetimeParameter -> {
             buffer += quoteIdentifier.text.escaped
             lifetimeParamBounds?.generateDocumentation(buffer)
@@ -307,7 +382,7 @@ private fun generateTypeReferenceDocumentation(element: RsTypeReference, buffer:
                 else -> typeElement.path?.generateDocumentation(buffer)
             }
         }
-        is RsTupleType -> typeElement.typeReferenceList.joinTo(buffer, ", ", "(", ")") { generateDocumentation(it) }
+        is RsTupleType -> typeElement.typeReferenceList.joinToWithBuffer(buffer, ", ", "(", ")") { generateDocumentation(it) }
         is RsArrayType -> {
             buffer += "["
             typeElement.typeReference.generateDocumentation(buffer)
@@ -347,6 +422,7 @@ private fun RsPath.isLinkNeeded(): Boolean {
     return !(element == null || element is RsTypeParameter)
 }
 
+// TODO: use RsQualifiedName scheme
 private fun RsPath.link(): String {
     val path = path
     val prefix = if (path != null) "${path.text.escaped}::" else typeQual?.text?.escaped
@@ -357,7 +433,11 @@ private fun createLink(buffer: StringBuilder, refText: String, text: String) {
     DocumentationManagerUtil.createHyperlink(buffer, refText, text, true)
 }
 
-private inline fun pre(block: () -> String?): String? = block()?.let { "<pre>$it</pre>" }
+private inline fun definition(builder: StringBuilder, block: (StringBuilder) -> Unit) {
+    builder += DocumentationMarkup.DEFINITION_START
+    block(builder)
+    builder += DocumentationMarkup.DEFINITION_END
+}
 
 private operator fun StringBuilder.plusAssign(value: String?) {
     if (value != null) {
@@ -369,23 +449,4 @@ private inline fun StringBuilder.b(action: (StringBuilder) -> Unit) {
     append("<b>")
     action(this)
     append("</b>")
-}
-
-private inline fun <T> Iterable<T>.joinTo(
-    buffer: StringBuilder,
-    separator: CharSequence = ", ",
-    prefix: CharSequence = "",
-    postfix: CharSequence = "",
-    action: T.(StringBuilder) -> Unit
-) {
-    buffer.append(prefix)
-    var needInsertSeparator = false
-    for (element in this) {
-        if (needInsertSeparator) {
-            buffer.append(separator)
-        }
-        element.action(buffer)
-        needInsertSeparator = true
-    }
-    buffer.append(postfix)
 }

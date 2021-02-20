@@ -8,15 +8,45 @@ package org.rust.lang.core.psi.ext
 import com.intellij.lang.ASTNode
 import com.intellij.psi.PsiElement
 import com.intellij.psi.stubs.IStubElementType
-import org.rust.lang.core.macros.ExpansionResult
+import org.rust.lang.core.macros.RsExpandedElement
+import org.rust.lang.core.psi.RsElementTypes.*
 import org.rust.lang.core.psi.RsPath
+import org.rust.lang.core.psi.tokenSetOf
 import org.rust.lang.core.resolve.ref.RsPathReference
 import org.rust.lang.core.resolve.ref.RsPathReferenceImpl
 import org.rust.lang.core.stubs.RsPathStub
 
-val RsPath.hasColonColon: Boolean get() = stub?.hasColonColon ?: (coloncolon != null)
-val RsPath.hasCself: Boolean get() = stub?.hasCself ?: (cself != null)
+private val RS_PATH_KINDS = tokenSetOf(IDENTIFIER, SELF, SUPER, CSELF, CRATE)
 
+val RsPath.hasColonColon: Boolean get() = stub?.hasColonColon ?: (coloncolon != null)
+val RsPath.hasCself: Boolean get() = kind == PathKind.CSELF
+val RsPath.kind: PathKind get() {
+    val stub = stub
+    if (stub != null) return stub.kind
+    val child = node.findChildByType(RS_PATH_KINDS)
+    return when (child?.elementType) {
+        IDENTIFIER -> PathKind.IDENTIFIER
+        SELF -> PathKind.SELF
+        SUPER -> PathKind.SUPER
+        CSELF -> PathKind.CSELF
+        CRATE -> PathKind.CRATE
+        else -> error("Malformed RsPath element: `$text`")
+    }
+}
+
+tailrec fun RsPath.basePath(): RsPath {
+    val qualifier = path
+    @Suppress("IfThenToElvis")
+    return if (qualifier == null) this else qualifier.basePath()
+}
+
+enum class PathKind {
+    IDENTIFIER,
+    SELF,
+    SUPER,
+    CSELF,
+    CRATE
+}
 
 abstract class RsPathImplMixin : RsStubbedElementImpl<RsPathStub>,
                                  RsPath {
@@ -27,11 +57,11 @@ abstract class RsPathImplMixin : RsStubbedElementImpl<RsPathStub>,
     override fun getReference(): RsPathReference = RsPathReferenceImpl(this)
 
     override val referenceNameElement: PsiElement
-        get() = checkNotNull(identifier ?: self ?: `super` ?: cself) {
+        get() = checkNotNull(identifier ?: self ?: `super` ?: cself ?: crate) {
             "Path must contain identifier: $this ${this.text} at ${this.containingFile.virtualFile.path}"
         }
 
     override val referenceName: String get() = stub?.referenceName ?: referenceNameElement.text
 
-    override fun getContext(): RsElement = ExpansionResult.getContextImpl(this)
+    override fun getContext(): PsiElement? = RsExpandedElement.getContextImpl(this)
 }

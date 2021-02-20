@@ -10,6 +10,7 @@ import com.intellij.openapi.util.TextRange
 import org.rust.lang.core.lexer.RustEscapesLexer
 import org.rust.lang.core.psi.RsElementTypes.*
 import org.rust.lang.utils.unescapeRust
+import java.text.NumberFormat
 
 interface RsComplexLiteral {
     val node: ASTNode
@@ -34,6 +35,17 @@ sealed class RsLiteralKind(val node: ASTNode) {
     class Integer(node: ASTNode) : RsLiteralKind(node), RsLiteralWithSuffix {
         override val validSuffixes: List<kotlin.String>
             get() = listOf("u8", "i8", "u16", "i16", "u32", "i32", "u64", "i64", "u128", "i128", "isize", "usize")
+
+        val value: Number?
+            get() = offsets.value?.substring(node.text)
+                ?.filter { it != '_' }
+                ?.let {
+                    try {
+                        NumberFormat.getInstance().parse(it)
+                    } catch (e: NumberFormatException) {
+                        null
+                    }
+                }
 
         override val offsets: LiteralOffsets by lazy { offsetsForNumber(node) }
     }

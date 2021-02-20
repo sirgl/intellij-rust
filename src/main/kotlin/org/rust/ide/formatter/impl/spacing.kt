@@ -129,7 +129,7 @@ fun createSpacingBuilder(commonSettings: CommonCodeStyleSettings, rustSettings: 
         .betweenInside(ts(Q), ts(BOUND), POLYBOUND).spaces(0)
 
         //== expressions
-        .beforeInside(LPAREN, PAT_ENUM).spaces(0)
+        .beforeInside(LPAREN, PAT_TUPLE_STRUCT).spaces(0)
         .beforeInside(LBRACK, INDEX_EXPR).spaces(0)
         .afterInside(VALUE_PARAMETER_LIST, LAMBDA_EXPR).spacing(1, 1, 0, true, 1)
         .between(MATCH_ARM, MATCH_ARM).spacing(1, 1, if (rustSettings.ALLOW_ONE_LINE_MATCH) 0 else 1, true, 1)
@@ -138,9 +138,9 @@ fun createSpacingBuilder(commonSettings: CommonCodeStyleSettings, rustSettings: 
 
         //== macros
         .beforeInside(EXCL, MACRO_CALL).spaces(0)
-        .beforeInside(EXCL, MACRO_DEFINITION).spaces(0)
-        .afterInside(EXCL, MACRO_DEFINITION).spaces(1)
-        .betweenInside(IDENTIFIER, MACRO_DEFINITION_BODY, MACRO_DEFINITION).spaces(1)
+        .beforeInside(EXCL, MACRO).spaces(0)
+        .afterInside(EXCL, MACRO).spaces(1)
+        .betweenInside(IDENTIFIER, MACRO_BODY, MACRO).spaces(1)
 
         //== rules with very large area of application
         .around(NO_SPACE_AROUND_OPS).spaces(0)
@@ -151,7 +151,7 @@ fun createSpacingBuilder(commonSettings: CommonCodeStyleSettings, rustSettings: 
 }
 
 fun Block.computeSpacing(child1: Block?, child2: Block, ctx: RsFmtContext): Spacing? {
-    if (child1 is ASTBlock && child2 is ASTBlock) SpacingContext.create(child1, child2, ctx).apply {
+    if (child1 is ASTBlock && child2 is ASTBlock) SpacingContext.create(child1, child2, ctx)?.apply {
         when {
             elementType2 == RustParserDefinition.EOL_COMMENT ->
                 return createKeepingFirstColumnSpacing(1, Int.MAX_VALUE, true, ctx.commonSettings.KEEP_BLANK_LINES_IN_CODE)
@@ -211,9 +211,9 @@ private data class SpacingContext(val node1: ASTNode,
                                   val ncPsi2: PsiElement,
                                   val ctx: RsFmtContext) {
     companion object {
-        fun create(child1: ASTBlock, child2: ASTBlock, ctx: RsFmtContext): SpacingContext {
-            val node1 = child1.node
-            val node2 = child2.node
+        fun create(child1: ASTBlock, child2: ASTBlock, ctx: RsFmtContext): SpacingContext? {
+            val node1 = child1.node ?: return null
+            val node2 = child2.node ?: return null
             val psi1 = node1.psi
             val psi2 = node2.psi
             val elementType1 = psi1.node.elementType

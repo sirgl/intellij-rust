@@ -8,7 +8,7 @@ package org.rust.cargo.toolchain
 import com.intellij.execution.configurations.GeneralCommandLine
 import com.intellij.openapi.util.SystemInfo
 import com.intellij.util.net.HttpConfigurable
-import org.rust.lang.RsTestBase
+import org.rust.RsTestBase
 import java.nio.file.Paths
 
 class CargoTest : RsTestBase() {
@@ -24,10 +24,10 @@ class CargoTest : RsTestBase() {
 
     fun `test basic command`() = checkCommandLine(
         cargo.toGeneralCommandLine(CargoCommandLine("test", wd, listOf("--all"))), """
-        cmd: /usr/bin/cargo test --all -- --nocapture
+        cmd: /usr/bin/cargo test --all --all-features
         env: RUST_BACKTRACE=short, TERM=ansi
         """, """
-        cmd: C:/usr/bin/cargo.exe test --all -- --nocapture
+        cmd: C:/usr/bin/cargo.exe test --all --all-features
         env: RUST_BACKTRACE=short, TERM=ansi
     """)
 
