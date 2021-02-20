@@ -8,21 +8,22 @@ package org.rust.ide.hints
 import com.intellij.openapi.vfs.VirtualFileFilter
 import com.intellij.psi.PsiElement
 import org.intellij.lang.annotations.Language
+import org.rust.ProjectDescriptor
+import org.rust.RsTestBase
+import org.rust.WithStdlibRustProjectDescriptor
 import org.rust.fileTreeFromText
-import org.rust.lang.RsTestBase
 import org.rust.lang.core.psi.*
 import org.rust.lang.core.psi.ext.ancestorOrSelf
 import org.rust.lang.core.psi.ext.descendantsOfType
 
-
 class RsInlayParameterHintsProviderTest : RsTestBase() {
 
-    fun testFnOneArg() = checkByText<RsCallExpr>("""
+    fun `test fn first arg`() = checkByText<RsCallExpr>("""
         fn foo(arg: u32) {}
         fn main() { foo(/*caret*/0); }
     """, "arg:", 0)
 
-    fun testFnTwoArg() = checkByText<RsCallExpr>("""
+    fun `test fn second arg`() = checkByText<RsCallExpr>("""
         fn foo(arg: u32, arg2: u32) {}
         fn main() { foo(0, /*caret*/1); }
     """, "arg2:", 1)
@@ -32,7 +33,7 @@ class RsInlayParameterHintsProviderTest : RsTestBase() {
         fn main() { foo(0, /*caret*/1); }
     """, "<none>", -1)
 
-    fun testMethodTwoArg() = checkByText<RsMethodCall>("""
+    fun `test method second arg`() = checkByText<RsMethodCall>("""
         struct S;
         impl S {
             fn foo(self, arg: u32, arg2: u32) {}
@@ -43,7 +44,7 @@ class RsInlayParameterHintsProviderTest : RsTestBase() {
         }
     """, "arg2:", 1)
 
-    fun testStructFnArg() = checkByText<RsCallExpr>("""
+    fun `test struct fn arg`() = checkByText<RsCallExpr>("""
         struct S;
         impl S {
             fn foo(self, arg: u32) {}
@@ -54,7 +55,7 @@ class RsInlayParameterHintsProviderTest : RsTestBase() {
         }
     """, "arg:", 1)
 
-    fun testLetDecl() = checkByText<RsLetDecl>("""
+    fun `test let decl`() = checkByText<RsLetDecl>("""
         struct S;
         fn main() {
             let s/*caret*/ = S;
@@ -239,9 +240,8 @@ class RsInlayParameterHintsProviderTest : RsTestBase() {
         }
     """, ": S<fn(i32) -> i32, S<fn(i32) -> i32, S<_, _>>>", 0)
 
+    @ProjectDescriptor(WithStdlibRustProjectDescriptor::class)
     fun `test inlay hint for loops`() = checkByText<RsForExpr>("""
-        #[lang = "std::iter::Iterator"]
-        trait Iterator { type Item; fn next(&mut self) -> Option<Self::Item>; }
         struct S;
         struct I;
         impl Iterator for I {
@@ -275,7 +275,7 @@ class RsInlayParameterHintsProviderTest : RsTestBase() {
         check(inlays.size == 1)
     }
 
-    inline private fun <reified T : PsiElement> checkNoHint(@Language("Rust") code: String, smart: Boolean = true) {
+    private inline fun <reified T : PsiElement> checkNoHint(@Language("Rust") code: String, smart: Boolean = true) {
         InlineFile(code)
         HintType.SMART_HINTING.set(smart)
         val handler = RsInlayParameterHintsProvider()
@@ -285,7 +285,7 @@ class RsInlayParameterHintsProviderTest : RsTestBase() {
             .forEach { check(it.isEmpty()) }
     }
 
-    inline private fun <reified T : PsiElement> checkByText(@Language("Rust") code: String, hint: String, pos: Int, smart: Boolean = true) {
+    private inline fun <reified T : PsiElement> checkByText(@Language("Rust") code: String, hint: String, pos: Int, smart: Boolean = true) {
         InlineFile(code)
         HintType.SMART_HINTING.set(smart)
 

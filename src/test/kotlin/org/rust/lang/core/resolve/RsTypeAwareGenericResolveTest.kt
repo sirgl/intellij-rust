@@ -217,6 +217,17 @@ class RsTypeAwareGenericResolveTest : RsResolveTestBase() {
     fun `test iterator for loop resolve`() = checkByCode("""
         #[lang = "std::iter::Iterator"]
         trait Iterator { type Item; fn next(&mut self) -> Option<Self::Item>; }
+        #[lang = "std::iter::IntoIterator"]
+        trait IntoIterator {
+            type Item;
+            type IntoIter: Iterator<Item=Self::Item>;
+            fn into_iter(self) -> Self::IntoIter;
+        }
+        impl<I: Iterator> IntoIterator for I {
+            type Item = I::Item;
+            type IntoIter = I;
+            fn into_iter(self) -> I { self }
+        }
 
         struct S;
         impl S { fn foo(&self) {} }
@@ -351,22 +362,59 @@ class RsTypeAwareGenericResolveTest : RsResolveTestBase() {
         }   //^
     """, TypeInferenceMarks.methodPickDerefOrder)
 
-    //FIXME: should resolve to a single "non ref" method!
     fun `test non inherent impl 2`() = checkByCode("""
-        trait T { fn foo(&self) { println!("Hello"); } }
-
+        trait T { fn foo(&self); }
         struct S;
 
         impl T for S { fn foo(&self) { println!("non ref"); } }
+                         //X
+        impl<'a> T for &'a S { fn foo(&self) { println!("ref"); } }
 
+        fn main() {
+            (&S).foo()
+               //^
+        }
+    """, TypeInferenceMarks.methodPickDerefOrder)
+
+    fun `test non inherent impl 3`() = checkByCode("""
+        trait T { fn foo(&self); }
+        struct S;
+
+        impl T for S { fn foo(&self) { println!("non ref"); } }
         impl<'a> T for &'a S { fn foo(&self) { println!("ref"); } }
                                  //X
 
         fn main() {
-            let x: &S = &S;
-            x.foo()
-              //^
+            (&&S).foo()
+                //^
         }
+    """, TypeInferenceMarks.methodPickDerefOrder)
+
+    fun `test non inherent impl 4`() = checkByCode("""
+        trait T1 { fn foo(&mut self); }
+        trait T2 { fn foo(&self); }
+        struct S;
+
+        impl T1 for S { fn foo(&mut self) { println!("non ref"); } }
+        impl<'a> T2 for &'a S { fn foo(&self) { println!("ref"); } }
+                                 //X
+        fn main() {
+            (&S).foo()
+               //^
+        }
+    """, TypeInferenceMarks.methodPickDerefOrder)
+
+    fun `test non inherent impl 5`() = checkByCode("""
+        trait T1 { fn foo(&self); }
+        trait T2 { fn foo(self); }
+        struct S;
+
+        impl T1 for S { fn foo(&self) { println!("non ref"); } }
+        impl<'a> T2 for &'a S { fn foo(self) { println!("ref"); } }
+
+        fn main() {
+            (&S).foo();
+        }      //^ unresolved
     """, TypeInferenceMarks.methodPickDerefOrder)
 
     fun `test indexing`() = checkByCode("""

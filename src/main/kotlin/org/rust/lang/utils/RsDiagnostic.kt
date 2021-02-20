@@ -25,11 +25,13 @@ import org.rust.lang.core.resolve.ImplLookup
 import org.rust.lang.core.resolve.StdKnownItems
 import org.rust.lang.core.types.BoundElement
 import org.rust.lang.core.types.TraitRef
+import org.rust.lang.core.types.isMutable
 import org.rust.lang.core.types.ty.*
 import org.rust.lang.refactoring.implementMembers.ImplementMembersFix
 import org.rust.lang.utils.RsErrorCode.*
 import org.rust.lang.utils.Severity.*
 import org.rust.stdext.buildList
+import org.rust.stdext.buildMap
 
 private val REF_STR_TY = TyReference(TyStr, Mutability.IMMUTABLE)
 private val MUT_REF_STR_TY = TyReference(TyStr, Mutability.MUTABLE)
@@ -87,8 +89,9 @@ sealed class RsDiagnostic(
                                 if (isTraitWithTySubstImplForActual(lookup, items.findAsRefTrait(), expectedTy)) {
                                     add(ConvertToRefTyFix(element, expectedTy))
                                 }
-                            } else if (expectedTy.mutability == Mutability.MUTABLE) {
-                                if (isTraitWithTySubstImplForActual(lookup, items.findBorrowMutTrait(), expectedTy)){
+                            } else if (expectedTy.mutability == Mutability.MUTABLE && element is RsExpr && element.isMutable
+                                && lookup.coercionSequence(actualTy).all { it !is TyReference || it.mutability.isMut }) {
+                                if (isTraitWithTySubstImplForActual(lookup, items.findBorrowMutTrait(), expectedTy)) {
                                     add(ConvertToBorrowedTyWithMutFix(element, expectedTy))
                                 }
                                 if (isTraitWithTySubstImplForActual(lookup, items.findAsMutTrait(), expectedTy)) {
@@ -110,6 +113,10 @@ sealed class RsDiagnostic(
                             } else if (expectedTy == MUT_REF_STR_TY) {
                                 add(ConvertToMutStrFix(element))
                             }
+                        }
+                        val derefsRefsToExpected = derefRefPathFromActualToExpected(lookup, element)
+                        if (derefsRefsToExpected != null) {
+                            add(ConvertToTyWithDerefsRefsFix(element, expectedTy, derefsRefsToExpected))
                         }
                     }
                 }
@@ -155,6 +162,48 @@ sealed class RsDiagnostic(
 
         private fun expectedFound(expectedTy: Ty, actualTy: Ty): String {
             return "expected `${expectedTy.escaped}`, found `${actualTy.escaped}`"
+        }
+
+        /**
+         * Try to find a "path" from [actualTy] to [expectedTy] through dereferences and references.
+         *
+         * The method works by getting coercion sequence of types for the [actualTy] and sequence of the types that can
+         * lead to [expectedTy] by adding references. The "expected sequence" is represented by a list of references'
+         * mutabilities, and a map from the type X to the index i in the list such that if we apply the references from
+         * 0 (inclusive) to i (exclusive) we will get [expectedTy]. For example for [expectedTy] = `&mut&i32` we will
+         * have: [mutable, immutable] and {&mut&i32 -> 0, &i32 -> 1, i32 -> 2}. Then, using those data structures, we
+         * try to find a first type X of the "actual" sequence that is also in the "expected" sequence, and a number of
+         * dereferences to get from [actualTy] to X and references to get from X to [expectedTy]. Finally we try to
+         * check if applying the references would agree with the expression's mutability.
+         */
+        private fun derefRefPathFromActualToExpected(lookup: ImplLookup, element: RsElement): DerefRefPath? {
+            // get all the types that can lead to `expectedTy` by adding references to them
+            val expectedRefSeq: MutableList<Mutability> = mutableListOf()
+            val tyToExpectedRefSeq: Map<Ty, Int> = buildMap {
+                put(expectedTy, 0)
+                var ty = expectedTy
+                var i = 1
+                while (ty is TyReference) {
+                    expectedRefSeq.add(ty.mutability)
+                    ty = ty.referenced
+                    put(ty, i++)
+                }
+            }
+            // get all the types we can get by dereferencing `actualTy`
+            val actualCoercionSeq = lookup.coercionSequence(actualTy).toList()
+            var refSeqEnd: Int? = null
+            // for the first type X in the "actual sequence" that is also in the "expected sequence"; get the number of
+            // dereferences we need to apply to get to X from `actualTy` and number of references to get to `expectedTy`
+            val derefs = actualCoercionSeq.indexOfFirst { refSeqEnd = tyToExpectedRefSeq[it]; refSeqEnd != null }
+            val refs = expectedRefSeq.subList(0, refSeqEnd?: return null)
+            // check that mutability of references would not contradict the `element`
+            val isSuitableMutability = refs.isEmpty() || !refs.last().isMut || (element as RsExpr).isMutable &&
+                // covers cases like `let mut x: &T = ...`
+                actualCoercionSeq.subList(0, derefs + 1).all {
+                    it !is TyReference || it.mutability.isMut
+                }
+            if (!isSuitableMutability) return null
+            return DerefRefPath(derefs, refs)
         }
     }
 
@@ -450,6 +499,22 @@ sealed class RsDiagnostic(
         }
     }
 
+    class ReservedLifetimeNameError(
+        element: PsiElement,
+        private val lifetimeName: String
+    ) : RsDiagnostic(element) {
+        override fun prepare() = PreparedAnnotation(
+            ERROR,
+            E0262,
+            errorText()
+        )
+
+        private fun errorText(): String {
+            val name = escapeString(lifetimeName)
+            return "`$name` is a reserved lifetime name"
+        }
+    }
+
     class DuplicateLifetimeError(
         element: PsiElement,
         private val fieldName: String
@@ -496,6 +561,35 @@ sealed class RsDiagnostic(
             val name = escapeString(fieldName)
             return "The name `$name` is already used for a type parameter in this type parameter list"
         }
+    }
+
+    class NotTraitError(
+        element: PsiElement,
+        private val found: RsItemElement
+    ) : RsDiagnostic(element) {
+        override fun prepare() = PreparedAnnotation(
+            ERROR,
+            E0404,
+            errorText()
+        )
+
+        private fun errorText(): String {
+            val itemKind = found.itemKindName
+            val name = escapeString(found.name)
+            return "Expected trait, found $itemKind `$name`"
+        }
+
+        private val RsItemElement.itemKindName: String
+            get() = when (this) {
+                is RsStructItem -> when (kind) {
+                    RsStructKind.STRUCT -> "struct"
+                    RsStructKind.UNION -> "union"
+                }
+                is RsEnumItem -> "enum"
+                is RsTypeAlias -> "type alias"
+                is RsModItem -> "module"
+                else -> error("unknown item")
+            }
     }
 
     class DuplicateDefinitionError(
@@ -631,16 +725,48 @@ sealed class RsDiagnostic(
             fixes = listOf(ConvertToReferenceFix(element), ConvertToBoxFix(element))
         )
     }
+
+    class ExperimentalFeature(
+        element: PsiElement,
+        private val presentableFeatureName: String,
+        private val fix: AddFeatureAttributeFix? = null
+    ) : RsDiagnostic(element) {
+        override fun prepare(): PreparedAnnotation = PreparedAnnotation(
+            ERROR,
+            E0658,
+            header = escapeString("$presentableFeatureName is experimental"),
+            fixes = listOfNotNull(fix)
+        )
+    }
+
+    class UndeclaredTypeOrModule(
+        element: PsiElement
+    ) : RsDiagnostic(element) {
+        override fun prepare(): PreparedAnnotation = PreparedAnnotation(
+            ERROR,
+            E0433,
+            header = escapeString(errorText())
+        )
+
+        private fun errorText(): String {
+            val elementType = element.elementType
+            // TODO: support other cases
+            return when (elementType) {
+                RsElementTypes.CRATE -> "`crate` in paths can only be used in start position"
+                else -> error("Unexpected element type: `$elementType`")
+            }
+        }
+    }
 }
 
 enum class RsErrorCode {
     E0046, E0050, E0060, E0061, E0069,
     E0121, E0124, E0133, E0185, E0186, E0198, E0199,
-    E0200, E0201, E0202, E0261, E0263, E0277,
+    E0200, E0201, E0202, E0261, E0262, E0263, E0277,
     E0308, E0379,
-    E0403, E0407, E0415, E0424, E0426, E0428, E0449, E0463,
+    E0403, E0404, E0407, E0415, E0424, E0426, E0428, E0433, E0449, E0463,
     E0569,
-    E0603, E0614, E0616, E0624;
+    E0603, E0614, E0616, E0624, E0658;
 
     val code: String
         get() = toString()

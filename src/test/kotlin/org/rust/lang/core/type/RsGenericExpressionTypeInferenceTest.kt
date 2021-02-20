@@ -334,6 +334,16 @@ class RsGenericExpressionTypeInferenceTest : RsTypificationTestBase() {
         }
     """)
 
+    fun `test struct field shorthand`() = testExpr("""
+        enum E<T> { A, B(T) }
+        struct S<T> { item: E<T> }
+        fn foo() -> S<u8> {
+            let item = E::A;
+                     //^ E<u8>
+            S { item }
+        }
+    """)
+
     fun `test struct expr with 2 fields of same type 1`() = testExpr("""
         struct X;
         struct S<T> { a: T, b: T }
@@ -1430,5 +1440,49 @@ class RsGenericExpressionTypeInferenceTest : RsTypificationTestBase() {
             let a = foo(0);
             a;
         } //^ X
+    """)
+
+    fun `test field type substitution after deref`() = testExpr("""
+        #[lang = "deref"]
+        trait Deref { type Target; }
+
+        struct S1<A> { field1: A }
+        struct S2<B> { parent: S1<B> }
+        impl<T> Deref for S2<T> { type Target = S1<T>; }
+
+        fn main() {
+            let s1 = S1 { field1: 1u8 };
+            let s2 = S2 { parent: s1 };
+
+            let a = s2.field1;
+            a;
+        } //^ u8
+    """)
+
+    fun `test Self substitution inside traits`() = testExpr("""
+        struct S<T>(T);
+        impl<T> Tr for S<T> { type Item = T; }
+        trait Tr: Sized {
+            type Item;
+            fn wrap<T>(mut self) -> S<Self> { unimplemented!() }
+            fn unwrap(self) -> Self::Item { unimplemented!() }
+
+            fn bar(&self) {
+                self.wrap().unwrap()
+            }               //^ Self
+        }
+    """)
+
+    fun `test type arguments remap on collapse to trait`() = testExpr("""
+        struct S;
+        trait Tr<A> { fn foo<B>(a: A, b: B) -> Self; }
+        impl Tr<u8> for S { fn foo<C>(a: u8, b: C) -> Self { unimplemented!() } }
+        impl Tr<u16> for S { fn foo<D>(a: u16, b: D) -> Self { unimplemented!() } }
+
+        fn main() {
+            let a = 0;
+            let s = S::foo::<u64>(0u8, a);
+            (a, s);
+        } //^ (u64, S)
     """)
 }

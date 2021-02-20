@@ -5,20 +5,19 @@
 
 package org.rust.lang.core.resolve
 
-import com.intellij.openapi.module.Module
-import com.intellij.testFramework.LightProjectDescriptor
+import org.rust.MockEdition
+import org.rust.ProjectDescriptor
+import org.rust.WithDependencyRustProjectDescriptor
 import org.rust.cargo.project.workspace.CargoWorkspace
-import org.rust.cargo.project.workspace.CargoWorkspaceData
-import java.nio.file.Paths
 
+@ProjectDescriptor(WithDependencyRustProjectDescriptor::class)
 class RsPackageLibraryResolveTest : RsResolveTestBase() {
-
     fun `test library as crate`() = stubOnlyResolve("""
     //- main.rs
-        extern crate my_lib;
+        extern crate test_package;
 
         fn main() {
-            my_lib::hello();
+            test_package::hello();
         }         //^ lib.rs
 
     //- lib.rs
@@ -27,7 +26,7 @@ class RsPackageLibraryResolveTest : RsResolveTestBase() {
 
     fun `test crate alias`() = stubOnlyResolve("""
     //- main.rs
-        extern crate my_lib as other_name;
+        extern crate test_package as other_name;
 
         fn main() {
             other_name::hello();
@@ -41,7 +40,7 @@ class RsPackageLibraryResolveTest : RsResolveTestBase() {
     fun `test macro rules`() = stubOnlyResolve("""
     //- main.rs
         #[macro_use]
-        extern crate my_lib;
+        extern crate test_package;
 
         fn main() {
             foo_bar!();
@@ -54,7 +53,7 @@ class RsPackageLibraryResolveTest : RsResolveTestBase() {
     fun `test macro rules missing macro_export`() = stubOnlyResolve("""
     //- main.rs
         #[macro_use]
-        extern crate my_lib;
+        extern crate test_package;
 
         fn main() {
             foo_bar!();
@@ -67,7 +66,7 @@ class RsPackageLibraryResolveTest : RsResolveTestBase() {
     fun `test macro rules missing macro_use`() = stubOnlyResolve("""
     //- main.rs
         // Missing #[macro_use] here
-        extern crate my_lib;
+        extern crate test_package;
 
         fn main() {
             foo_bar!();
@@ -80,7 +79,7 @@ class RsPackageLibraryResolveTest : RsResolveTestBase() {
     fun `test macro rules in mod 1`() = stubOnlyResolve("""
     //- main.rs
         #[macro_use]
-        extern crate my_lib;
+        extern crate test_package;
 
         fn main() {
             foo_bar!();
@@ -95,7 +94,7 @@ class RsPackageLibraryResolveTest : RsResolveTestBase() {
     fun `test macro rules in mod 2`() = stubOnlyResolve("""
     //- main.rs
         #[macro_use]
-        extern crate my_lib;
+        extern crate test_package;
 
         fn main() {
             foo_bar!();
@@ -107,13 +106,205 @@ class RsPackageLibraryResolveTest : RsResolveTestBase() {
         macro_rules! foo_bar { () => {} }
     """)
 
-    override fun getProjectDescriptor(): LightProjectDescriptor = WithLibraryProjectDescriptor
+    fun `test macro reexport in use item`() = stubOnlyResolve("""
+    //- lib.rs
+        #![feature(use_extern_macros)]
 
-    private object WithLibraryProjectDescriptor : RustProjectDescriptorBase() {
-        override fun testCargoProject(module: Module, contentRoot: String): CargoWorkspace {
-            return CargoWorkspaceData(listOf(testCargoPackage(contentRoot, name = "my_lib")), emptyMap()).let {
-                CargoWorkspace.deserialize(Paths.get("/my-crate/Cargo.toml"), it)
+        #[macro_use]
+        extern crate dep_lib_target;
+
+        pub use dep_lib_target::foo;
+                               //^ dep-lib/lib.rs
+    //- dep-lib/lib.rs
+        #[macro_export]
+        macro_rules! foo {
+            () => {};
+        }
+    """)
+
+    fun `test new macro reexport`() = stubOnlyResolve("""
+    //- lib.rs
+        #![feature(use_extern_macros)]
+
+        extern crate dep_lib_target;
+
+        pub use dep_lib_target::foo;
+
+    //- dep-lib/lib.rs
+        #[macro_export]
+        macro_rules! foo {
+            () => {};
+        }
+
+    //- main.rs
+        #[macro_use]
+        extern crate test_package;
+
+        fn main() {
+            foo!();
+            //^ dep-lib/lib.rs
+        }
+    """)
+
+    fun `test new macro reexport with crate alias`() = stubOnlyResolve("""
+    //- lib.rs
+        #![feature(use_extern_macros)]
+
+        extern crate dep_lib_target as dep_lib;
+
+        pub use dep_lib::foo;
+
+    //- dep-lib/lib.rs
+        #[macro_export]
+        macro_rules! foo {
+            () => {};
+        }
+
+    //- main.rs
+        #[macro_use]
+        extern crate test_package;
+
+        fn main() {
+            foo!();
+            //^ dep-lib/lib.rs
+        }
+    """)
+
+    fun `test new macro reexport from inner module`() = stubOnlyResolve("""
+    //- lib.rs
+        #![feature(use_extern_macros)]
+
+        extern crate dep_lib_target;
+
+        pub use dep_lib_target::foo;
+
+    //- dep-lib/lib.rs
+        mod macros;
+
+    //- dep-lib/macros.rs
+        #[macro_export]
+        macro_rules! foo {
+            () => {};
+        }
+
+    //- main.rs
+        #[macro_use]
+        extern crate test_package;
+
+        fn main() {
+            foo!();
+            //^ dep-lib/macros.rs
+        }
+    """)
+
+    fun `test reexported macros are visible in reexporting mod`() = stubOnlyResolve("""
+    //- lib.rs
+        #![feature(use_extern_macros)]
+
+        extern crate dep_lib_target;
+
+        pub use dep_lib_target::foo;
+
+        fn bar() {
+            foo!();
+            //^ dep-lib/lib.rs
+        }
+
+    //- dep-lib/lib.rs
+        #[macro_export]
+        macro_rules! foo {
+            () => {};
+        }
+    """, NameResolutionTestmarks.missingMacroUse)
+
+    fun `test import from crate root without 'pub' vis`() = stubOnlyResolve("""
+    //- lib.rs
+        mod foo {
+            pub mod bar {
+                pub struct S;
             }
         }
-    }
+        use foo::bar;
+
+        mod baz;
+    //- baz.rs
+        use bar::S;
+               //^ lib.rs
+    """)
+
+    fun `test transitive dependency on the same crate`() = stubOnlyResolve("""
+    //- dep-lib-new/lib.rs
+        pub struct Foo;
+    //- dep-lib/lib.rs
+        extern crate dep_lib_target;
+
+        pub use dep_lib_target::Foo;
+    //- lib.rs
+        extern crate dep_lib_target;
+
+        use dep_lib_target::Foo;
+                            //^ dep-lib-new/lib.rs
+    """, NameResolutionTestmarks.otherVersionOfSameCrate)
+
+    @MockEdition(CargoWorkspace.Edition.EDITION_2018)
+    fun `test resolve reference without extern crate item 1`() = stubOnlyResolve("""
+    //- dep-lib/lib.rs
+        pub struct Foo;
+    //- lib.rs
+        use dep_lib_target::Foo;
+                //^ dep-lib/lib.rs
+    """)
+
+    @MockEdition(CargoWorkspace.Edition.EDITION_2018)
+    fun `test resolve reference without extern crate item 2`() = stubOnlyResolve("""
+    //- dep-lib/lib.rs
+        pub struct Foo;
+    //- lib.rs
+        fn foo() -> dep_lib_target::Foo { unimplemented!() }
+                                   //^ dep-lib/lib.rs
+    """)
+
+    @MockEdition(CargoWorkspace.Edition.EDITION_2018)
+    fun `test extern crate item (edition 2018)`() = stubOnlyResolve("""
+    //- dep-lib/lib.rs
+        pub struct Foo;
+    //- lib.rs
+        extern crate dep_lib_target;
+
+        fn foo() -> dep_lib_target::Foo { unimplemented!() }
+                                   //^ dep-lib/lib.rs
+    """, ItemResolutionTestmarks.externCrateItemWithoutAlias)
+
+    @MockEdition(CargoWorkspace.Edition.EDITION_2018)
+    fun `test extern crate item alias 1 (edition 2018)`() = stubOnlyResolve("""
+    //- dep-lib/lib.rs
+        pub struct Foo;
+    //- lib.rs
+        extern crate dep_lib_target as dep_lib;
+
+        fn foo() -> dep_lib::Foo { unimplemented!() }
+                            //^ dep-lib/lib.rs
+    """)
+
+    @MockEdition(CargoWorkspace.Edition.EDITION_2018)
+    fun `test extern crate item alias 2 (edition 2018)`() = stubOnlyResolve("""
+    //- dep-lib/lib.rs
+        pub struct Foo;
+    //- lib.rs
+        extern crate dep_lib_target as dep_lib;
+
+        fn foo() -> dep_lib_target::Foo { unimplemented!() }
+                                   //^ dep-lib/lib.rs
+    """)
+
+    @MockEdition(CargoWorkspace.Edition.EDITION_2018)
+    fun `test extern crate item alias with same name (edition 2018)`() = stubOnlyResolve("""
+    //- dep-lib/lib.rs
+        pub struct Foo;
+    //- lib.rs
+        extern crate dep_lib_target as dep_lib_target;
+
+        fn foo() -> dep_lib_target::Foo { unimplemented!() }
+                                   //^ dep-lib/lib.rs
+    """, ItemResolutionTestmarks.externCrateItemAliasWithSameName)
 }

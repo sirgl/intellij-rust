@@ -8,14 +8,11 @@ package org.rust.lang.core.resolve
 import com.intellij.codeInsight.lookup.LookupElement
 import org.rust.lang.core.completion.createLookupElement
 import org.rust.lang.core.psi.RsFunction
-import org.rust.lang.core.psi.RsImplItem
-import org.rust.lang.core.psi.ext.RsElement
-import org.rust.lang.core.psi.ext.RsNamedElement
-import org.rust.lang.core.psi.ext.isTest
-import org.rust.lang.core.resolve.ref.MethodCallee
+import org.rust.lang.core.psi.ext.*
+import org.rust.lang.core.resolve.ref.MethodResolveVariant
 import org.rust.lang.core.types.BoundElement
-import org.rust.lang.core.types.ty.Substitution
-import org.rust.lang.core.types.ty.emptySubstitution
+import org.rust.lang.core.types.Substitution
+import org.rust.lang.core.types.emptySubstitution
 
 /**
  * ScopeEntry is some PsiElement visible in some code scope.
@@ -48,7 +45,7 @@ enum class ScopeEvent : ScopeEntry {
  * return `false` to continue search
  */
 typealias RsResolveProcessor = (ScopeEntry) -> Boolean
-typealias RsMethodResolveProcessor = (MethodCallee) -> Boolean
+typealias RsMethodResolveProcessor = (MethodResolveVariant) -> Boolean
 
 fun collectPathResolveVariants(
     referenceName: String,
@@ -101,7 +98,7 @@ data class AssocItemScopeEntry(
     override val name: String,
     override val element: RsElement,
     override val subst: Substitution = emptySubstitution,
-    val impl: RsImplItem?
+    val source: TraitImplSource
 ) : ScopeEntry
 
 private class LazyScopeEntry(
@@ -149,4 +146,12 @@ fun processAllWithSubst(
         if (processor(BoundElement(e, subst))) return true
     }
     return false
+}
+
+fun filterCompletionVariantsByVisibility(processor: RsResolveProcessor, mod: RsMod): RsResolveProcessor {
+    return fun(it: ScopeEntry): Boolean {
+        val visible = it.element as? RsVisible ?: return processor(it)
+        if (visible.isVisibleFrom(mod)) return processor(it)
+        return false
+    }
 }

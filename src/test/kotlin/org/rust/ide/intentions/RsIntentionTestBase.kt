@@ -6,36 +6,29 @@
 package org.rust.ide.intentions
 
 import com.intellij.codeInsight.intention.IntentionAction
+import com.intellij.util.ui.UIUtil
 import org.intellij.lang.annotations.Language
+import org.rust.RsTestBase
 import org.rust.fileTreeFromText
-import org.rust.lang.RsTestBase
 import org.rust.openapiext.Testmark
 
 abstract class RsIntentionTestBase(val intention: IntentionAction) : RsTestBase() {
-    fun `test intention has documentation`() {
-        val directory = "intentionDescriptions/${intention.javaClass.simpleName}"
-        val files = listOf("before.rs.template", "after.rs.template", "description.html")
-        for (file in files) {
-            val text = getResourceAsString("$directory/$file")
-                ?: fail("No inspection description for ${intention.javaClass}.\n" +
-                "Add ${files.joinToString()} to src/main/resources/$directory")
-
-            if (file.endsWith(".html")) {
-                checkHtmlStyle(text)
-            }
-        }
-    }
 
     protected fun doAvailableTest(@Language("Rust") before: String, @Language("Rust") after: String) {
         InlineFile(before.trimIndent()).withCaret()
-        myFixture.launchAction(intention)
+        launchAction()
         myFixture.checkResult(replaceCaretMarker(after.trimIndent()))
     }
 
     protected fun doAvailableTestWithFileTree(@Language("Rust") fileStructureBefore: String, @Language("Rust") openedFileAfter: String) {
         fileTreeFromText(fileStructureBefore).createAndOpenFileWithCaretMarker()
-        myFixture.launchAction(intention)
+        launchAction()
         myFixture.checkResult(replaceCaretMarker(openedFileAfter.trimIndent()))
+    }
+
+    private fun launchAction() {
+        UIUtil.dispatchAllInvocationEvents()
+        myFixture.launchAction(intention)
     }
 
     protected fun doAvailableTest(@Language("Rust") before: String,

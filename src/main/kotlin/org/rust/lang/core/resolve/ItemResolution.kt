@@ -5,10 +5,15 @@
 
 package org.rust.lang.core.resolve
 
+import org.rust.cargo.project.workspace.CargoWorkspace.Edition.EDITION_2018
+import org.rust.cargo.util.AutoInjectedCrates.CORE
+import org.rust.cargo.util.AutoInjectedCrates.STD
 import org.rust.lang.core.psi.*
 import org.rust.lang.core.psi.ext.*
+import org.rust.lang.core.resolve.ItemResolutionTestmarks.externCrateItemWithoutAlias
+import org.rust.lang.core.resolve.ItemResolutionTestmarks.externCrateItemAliasWithSameName
 import org.rust.lang.core.resolve.ref.RsReference
-import org.rust.openapiext.toPsiFile
+import org.rust.openapiext.Testmark
 import java.util.*
 
 fun processItemOrEnumVariantDeclarations(
@@ -50,12 +55,12 @@ fun processItemDeclarations(
             is RsUseItem ->
                 if (item.isPublic || withPrivateImports) {
                     val rootSpeck = item.useSpeck ?: return false
-                    forEachLeafSpeck(rootSpeck) { speck ->
+                    rootSpeck.forEachLeafSpeck { speck ->
                         (if (speck.isStarImport) starImports else itemImports) += speck
                     }
                 }
 
-        // Unit like structs are both types and values
+            // Unit like structs are both types and values
             is RsStructItem ->
                 if (item.namespaces.intersect(ns).isNotEmpty() && processor(item)) return true
 
@@ -75,9 +80,28 @@ fun processItemDeclarations(
                 if (processAll(item.functionList, processor) || processAll(item.constantList, processor)) return true
 
             is RsExternCrateItem -> {
-                val name = item.alias?.name ?: item.name ?: return false
-                val mod = item.reference.resolve() ?: return false
-                if (processor(name, mod)) return true
+                if (item.isPublic || withPrivateImports) {
+                    val itemName = item.name
+                    val aliasName = item.alias?.name
+                    val name = aliasName ?: itemName ?: return false
+                    val edition = item.containingCargoTarget?.edition
+
+                    if (edition == EDITION_2018) {
+                        // For edition 2018 we should process only extern crate item
+                        // which brings new name into the scope, i.e. with alias,
+                        // because otherwise this item is already processed in `NameResolutionKt#processPathResolveVariants`
+                        if (aliasName == null) {
+                            externCrateItemWithoutAlias.hit()
+                            return false
+                        }
+                        if (aliasName == itemName) {
+                            externCrateItemAliasWithSameName.hit()
+                            return false
+                        }
+                    }
+                    val mod = item.reference.resolve() ?: return false
+                    if (processor(name, mod)) return true
+                }
             }
         }
         return false
@@ -87,30 +111,21 @@ fun processItemDeclarations(
 
 
     if (Namespace.Types in ns) {
-        if (scope is RsFile && scope.isCrateRoot) {
-            val pkg = scope.containingCargoPackage
+        if (scope is RsFile && scope.isCrateRoot && withPrivateImports) {
+            // Rust injects implicit `extern crate std` in every crate root module unless it is
+            // a `#![no_std]` crate, in which case `extern crate core` is injected. However, if
+            // there is a (unstable?) `#![no_core]` attribute, nothing is injected.
+            //
+            // https://doc.rust-lang.org/book/using-rust-without-the-standard-library.html
+            // The stdlib lib itself is `#![no_std]`, and the core is `#![no_core]`
+            when (scope.attributes) {
+                RsFile.Attributes.NONE ->
+                    if (processor.lazy(STD) { scope.findDependencyCrateRoot(STD) }) return true
 
-            if (pkg != null) {
-                val findStdMod = { name: String ->
-                    val crate = pkg.findDependency(name)?.crateRoot
-                    crate?.toPsiFile(scope.project)?.rustMod
-                }
+                RsFile.Attributes.NO_STD ->
+                    if (processor.lazy(CORE) { scope.findDependencyCrateRoot(CORE) }) return true
 
-                // Rust injects implicit `extern crate std` in every crate root module unless it is
-                // a `#![no_std]` crate, in which case `extern crate core` is injected. However, if
-                // there is a (unstable?) `#![no_core]` attribute, nothing is injected.
-                //
-                // https://doc.rust-lang.org/book/using-rust-without-the-standard-library.html
-                // The stdlib lib itself is `#![no_std]`, and the core is `#![no_core]`
-                when (scope.attributes) {
-                    RsFile.Attributes.NONE ->
-                        if (processor.lazy("std") { findStdMod("std") }) return true
-
-                    RsFile.Attributes.NO_STD ->
-                        if (processor.lazy("core") { findStdMod("core") }) return true
-
-                    RsFile.Attributes.NO_CORE -> Unit
-                }
+                RsFile.Attributes.NO_CORE -> Unit
             }
         }
     }
@@ -126,7 +141,16 @@ fun processItemDeclarations(
         return false
     }
     for (speck in starImports) {
-        val basePath = speck.path
+        val path = speck.path
+        val basePath = if (path == null && speck.context is RsUseGroup) {
+            // `use foo::bar::{self, *}`
+            //           ~~~
+            speck.qualifier
+        } else {
+            // `use foo::bar::*` or `use foo::{self, bar::*}`
+            //           ~~~                         ~~~
+            path
+        }
         val mod = (if (basePath != null) basePath.reference.resolve() else speck.crateRoot)
             ?: continue
 
@@ -171,7 +195,7 @@ private fun processMultiResolveWithNs(name: String, ns: Set<Namespace>, ref: RsR
     return false
 }
 
-fun forEachLeafSpeck(root: RsUseSpeck, consumer: (RsUseSpeck) -> Unit) {
-    val group = root.useGroup
-    if (group == null) consumer(root) else group.useSpeckList.forEach { forEachLeafSpeck(it, consumer) }
+object ItemResolutionTestmarks {
+    val externCrateItemWithoutAlias = Testmark("externCrateItemWithoutAlias")
+    val externCrateItemAliasWithSameName = Testmark("externCrateItemAliasWithSameName")
 }

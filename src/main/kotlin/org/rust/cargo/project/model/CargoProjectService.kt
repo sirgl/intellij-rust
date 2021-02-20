@@ -11,12 +11,16 @@ import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.application.runWriteAction
 import com.intellij.openapi.components.service
 import com.intellij.openapi.project.Project
+import com.intellij.openapi.roots.ContentEntry
+import com.intellij.openapi.util.io.FileUtil
 import com.intellij.openapi.vfs.VirtualFile
 import com.intellij.util.messages.Topic
 import org.jetbrains.annotations.TestOnly
+import org.rust.cargo.CargoConstants
 import org.rust.cargo.project.settings.rustSettings
 import org.rust.cargo.project.workspace.CargoWorkspace
 import org.rust.cargo.toolchain.RustToolchain
+import org.rust.cargo.toolchain.RustcVersion
 import org.rust.ide.notifications.showBalloon
 import java.nio.file.Path
 import java.util.concurrent.CompletableFuture
@@ -30,9 +34,11 @@ import java.util.concurrent.TimeUnit
  * Cargo itself via `cargo metadata` command.
  */
 interface CargoProjectsService {
-    fun findProjectForFile(file: VirtualFile): CargoProject?
     val allProjects: Collection<CargoProject>
     val hasAtLeastOneValidProject: Boolean
+
+    fun findProjectForFile(file: VirtualFile): CargoProject?
+    fun findPackageForFile(file: VirtualFile): CargoWorkspace.Package?
 
     fun attachCargoProject(manifest: Path): Boolean
     fun detachCargoProject(cargoProject: CargoProject)
@@ -40,7 +46,13 @@ interface CargoProjectsService {
     fun discoverAndRefresh(): CompletableFuture<List<CargoProject>>
 
     @TestOnly
-    fun createTestProject(rootDir: VirtualFile, ws: CargoWorkspace)
+    fun createTestProject(rootDir: VirtualFile, ws: CargoWorkspace, rustcInfo: RustcInfo? = null)
+
+    @TestOnly
+    fun setRustcInfo(rustcInfo: RustcInfo)
+
+    @TestOnly
+    fun setEdition(edition: CargoWorkspace.Edition)
 
     @TestOnly
     fun discoverAndRefreshSync(): List<CargoProject> {
@@ -72,23 +84,26 @@ interface CargoProject {
     val presentableName: String
     val workspace: CargoWorkspace?
 
+    val rustcInfo: RustcInfo?
+
     val workspaceStatus: UpdateStatus
     val stdlibStatus: UpdateStatus
+    val rustcInfoStatus: UpdateStatus
 
-    val mergedStatus: UpdateStatus
-        get() = when {
-            workspaceStatus is UpdateStatus.UpdateFailed -> workspaceStatus
-            stdlibStatus is UpdateStatus.UpdateFailed -> stdlibStatus
-            workspaceStatus is UpdateStatus.NeedsUpdate -> workspaceStatus
-            else -> stdlibStatus
-        }
+    val mergedStatus: UpdateStatus get() = workspaceStatus
+        .merge(stdlibStatus)
+        .merge(rustcInfoStatus)
 
-    sealed class UpdateStatus {
-        object NeedsUpdate : UpdateStatus()
-        object UpToDate : UpdateStatus()
-        class UpdateFailed(val reason: String) : UpdateStatus()
+    sealed class UpdateStatus(private val priority: Int) {
+        object UpToDate : UpdateStatus(0)
+        object NeedsUpdate : UpdateStatus(1)
+        class UpdateFailed(val reason: String) : UpdateStatus(2)
+
+        fun merge(status: UpdateStatus): UpdateStatus = if (priority >= status.priority) this else status
     }
 }
+
+data class RustcInfo(val sysroot: String, val version: RustcVersion?)
 
 fun guessAndSetupRustProject(project: Project, explicitRequest: Boolean = false): Boolean {
     if (!explicitRequest) {
@@ -132,4 +147,15 @@ private fun discoverToolchain(project: Project) {
         project.showBalloon("Using $tool", NotificationType.INFORMATION)
         project.cargoProjects.discoverAndRefresh()
     }
+}
+
+fun ContentEntry.setup(contentRoot: VirtualFile) {
+    val makeVfsUrl = { dirName: String -> FileUtil.join(contentRoot.url, dirName) }
+    CargoConstants.ProjectLayout.sources.map(makeVfsUrl).forEach {
+        addSourceFolder(it, /* test = */ false)
+    }
+    CargoConstants.ProjectLayout.tests.map(makeVfsUrl).forEach {
+        addSourceFolder(it, /* test = */ true)
+    }
+    addExcludeFolder(makeVfsUrl(CargoConstants.ProjectLayout.target))
 }

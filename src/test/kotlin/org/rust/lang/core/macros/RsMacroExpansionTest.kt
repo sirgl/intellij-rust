@@ -17,6 +17,28 @@ class RsMacroExpansionTest : RsMacroExpansionTestBase() {
         fn bar() {}
     """)
 
+    fun `test ident self`() = doTest("""
+        macro_rules! foo {
+            ($ i:ident) => (
+                use foo::{$ i};
+            )
+        }
+        foo! { self }
+    """, """
+        use foo::{self};
+    """)
+
+    fun `test ident Self`() = doTest("""
+        macro_rules! foo {
+            ($ i:ident) => (
+                impl S { fn foo() -> $ i { S } }
+            )
+        }
+        foo! { Self }
+    """, """
+        impl S { fn foo() -> Self { S } }
+    """)
+
     fun `test path`() = doTest("""
         macro_rules! foo {
             ($ i:path) => {
@@ -43,7 +65,7 @@ class RsMacroExpansionTest : RsMacroExpansionTestBase() {
         }
         foo! { 2 + 2 * baz(3).quux() }
     """, """
-         fn bar() { 2 + 2 * baz(3).quux(); }
+         fn bar() { (2 + 2 * baz(3).quux()); }
     """)
 
     fun `test ty`() = doTest("""
@@ -147,6 +169,18 @@ class RsMacroExpansionTest : RsMacroExpansionTestBase() {
         }
         foo! {}
     """, "")
+
+    fun `test group after empty group`() = doTest("""
+        macro_rules! foo {
+            ($($ i:meta)* ; $($ j:item)*) => {
+                $($ j)*
+            }
+        }
+
+        foo!{ ; fn foo() {} }
+    """, """
+        fn foo() {}
+    """)
 
     fun `test all items`() = doTest("""
         macro_rules! foo {
@@ -353,7 +387,7 @@ class RsMacroExpansionTest : RsMacroExpansionTestBase() {
         }
         foo! { 1, 2, 3, 4 }
     """, """
-        fn foo() { 1; 2; 3; 4; }
+        fn foo() { (1); (2); (3); (4); }
     """)
 
     fun `test match non-group pattern with asterisk`() = doTest("""
@@ -385,7 +419,7 @@ class RsMacroExpansionTest : RsMacroExpansionTestBase() {
         }
         foo! { mod a {}, mod b {}; 1, 2 }
     """, """
-        fn foo() { 1; 2; }
+        fn foo() { (1); (2); }
         mod a {}
         mod b {}
     """)
@@ -398,8 +432,8 @@ class RsMacroExpansionTest : RsMacroExpansionTestBase() {
         }
         foo! { foo 1,2,3; bar 4,5,6 }
     """, """
-        fn foo() { 1; 2; 3; }
-        fn bar() { 4; 5; 6; }
+        fn foo() { (1); (2); (3); }
+        fn bar() { (4); (5); (6); }
     """)
 
     fun `test nested groups that uses vars from outer group`() = doTest("""
@@ -410,11 +444,11 @@ class RsMacroExpansionTest : RsMacroExpansionTestBase() {
         }
         foo! { 1, foo, bar, baz; 2, quux, eggs }
     """, """
-        fn foo() { 1; }
-        fn bar() { 1; }
-        fn baz() { 1; }
-        fn quux() { 2; }
-        fn eggs() { 2; }
+        fn foo() { (1); }
+        fn bar() { (1); }
+        fn baz() { (1); }
+        fn quux() { (2); }
+        fn eggs() { (2); }
     """)
 
     fun `test group in braces`() = doTest("""
@@ -431,7 +465,7 @@ class RsMacroExpansionTest : RsMacroExpansionTestBase() {
     """, """
          mod a {}
          mod b {}
-         fn foo() { 2; }
+         fn foo() { (2); }
     """)
 
     fun `test group with the separator the same as the next token 1`() = doTest(MacroExpansionMarks.groupInputEnd1, """
@@ -460,5 +494,51 @@ class RsMacroExpansionTest : RsMacroExpansionTestBase() {
         }
     """, """
          fn foo() {}
+    """)
+
+    fun `test impl members context`() = checkSingleMacro("""
+        macro_rules! foo {
+            () => {
+                fn foo() {}
+                type Bar = u8;
+                const BAZ: u8 = 0;
+            }
+        }
+
+        struct S;
+        impl S {
+            foo!();
+        }  //^
+    """, """
+        fn foo() {}
+        type Bar = u8;
+        const BAZ: u8 = 0;
+    """)
+
+    fun `test pattern context`() = checkSingleMacro("""
+        macro_rules! foo {
+            ($ i:ident, $ j:ident) => {
+                ($ i, $ j)
+            }
+        }
+
+        fn main() {
+            let (foo!(a, b), c) = ((1, 2), 3);
+        }      //^
+    """, """
+        (a, b)
+    """)
+
+    fun `test type context`() = checkSingleMacro("""
+        macro_rules! foo {
+            ($ i:ident, $ j:ident) => {
+                $ i<$ j>
+            }
+        }
+
+        fn bar() -> foo!(Option, i32) { unimplemented!() }
+                  //^
+    """, """
+        Option<i32>
     """)
 }

@@ -10,12 +10,15 @@ import com.intellij.execution.process.ProcessAdapter
 import com.intellij.execution.process.ProcessEvent
 import com.intellij.notification.NotificationType
 import com.intellij.openapi.application.ApplicationManager
+import com.intellij.openapi.application.runReadAction
 import com.intellij.openapi.application.runWriteAction
 import com.intellij.openapi.components.PersistentStateComponent
 import com.intellij.openapi.components.State
+import com.intellij.openapi.module.ModuleUtilCore
 import com.intellij.openapi.progress.BackgroundTaskQueue
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.roots.ModuleRootManager
+import com.intellij.openapi.roots.ModuleRootModificationUtil
 import com.intellij.openapi.roots.ex.ProjectRootManagerEx
 import com.intellij.openapi.util.EmptyRunnable
 import com.intellij.openapi.util.Key
@@ -31,6 +34,8 @@ import org.jetbrains.annotations.TestOnly
 import org.rust.cargo.project.model.CargoProject
 import org.rust.cargo.project.model.CargoProject.UpdateStatus
 import org.rust.cargo.project.model.CargoProjectsService
+import org.rust.cargo.project.model.RustcInfo
+import org.rust.cargo.project.model.setup
 import org.rust.cargo.project.settings.RustProjectSettingsService
 import org.rust.cargo.project.settings.rustSettings
 import org.rust.cargo.project.settings.toolchain
@@ -117,14 +122,18 @@ class CargoProjectsServiceImpl(
             }
         })
 
-    override fun findProjectForFile(file: VirtualFile): CargoProject? =
-        directoryIndex.getInfoForFile(file).takeIf { it !== noProjectMarker }
+    private val packageIndex: CargoPackageIndex = CargoPackageIndex(project, this)
 
     override val allProjects: Collection<CargoProject>
         get() = projects.currentState
 
     override val hasAtLeastOneValidProject: Boolean
         get() = hasAtLeastOneValidProject(allProjects)
+
+    override fun findProjectForFile(file: VirtualFile): CargoProject? =
+        directoryIndex.getInfoForFile(file).takeIf { it !== noProjectMarker }
+
+    override fun findPackageForFile(file: VirtualFile): CargoWorkspace.Package? = packageIndex.findPackageForFile(file)
 
     override fun attachCargoProject(manifest: Path): Boolean {
         if (isExistingProject(allProjects, manifest)) return false
@@ -171,27 +180,51 @@ class CargoProjectsServiceImpl(
     ): CompletableFuture<List<CargoProjectImpl>> =
         projects.updateAsync(f)
             .thenApply { projects ->
-                directoryIndex.resetIndex()
                 ApplicationManager.getApplication().invokeAndWait {
                     runWriteAction {
+                        directoryIndex.resetIndex()
                         ProjectRootManagerEx.getInstanceEx(project)
                             .makeRootsChange(EmptyRunnable.getInstance(), false, true)
+                        project.messageBus.syncPublisher(CargoProjectsService.CARGO_PROJECTS_TOPIC)
+                            .cargoProjectsUpdated(projects)
                     }
                 }
-                project.messageBus.syncPublisher(CargoProjectsService.CARGO_PROJECTS_TOPIC)
-                    .cargoProjectsUpdated(projects)
 
                 projects
             }
 
     @TestOnly
-    override fun createTestProject(rootDir: VirtualFile, ws: CargoWorkspace) {
+    override fun createTestProject(rootDir: VirtualFile, ws: CargoWorkspace, rustcInfo: RustcInfo?) {
         val manifest = rootDir.pathAsPath.resolve("Cargo.toml")
-        val testProject = CargoProjectImpl(manifest, this, ws, null, UpdateStatus.UpToDate)
+        val testProject = CargoProjectImpl(manifest, this, ws, null, rustcInfo,
+            workspaceStatus = UpdateStatus.UpToDate,
+            rustcInfoStatus = if (rustcInfo != null) UpdateStatus.UpToDate else UpdateStatus.NeedsUpdate)
         testProject.setRootDir(rootDir)
-        modifyProjects { _ ->
-            CompletableFuture.completedFuture(listOf(testProject))
-        }.get(1, TimeUnit.MINUTES)
+        modifyProjectsSync { CompletableFuture.completedFuture(listOf(testProject)) }
+    }
+
+    @TestOnly
+    override fun setRustcInfo(rustcInfo: RustcInfo) {
+        modifyProjectsSync { projects ->
+            val updatedProjects = projects.map { it.copy(rustcInfo = rustcInfo, rustcInfoStatus = UpdateStatus.UpToDate) }
+            CompletableFuture.completedFuture(updatedProjects)
+        }
+    }
+
+    @TestOnly
+    override fun setEdition(edition: CargoWorkspace.Edition) {
+        modifyProjectsSync { projects ->
+            val updatedProjects = projects.map { project ->
+                val ws = project.workspace?.withEdition(edition)
+                project.copy(rawWorkspace = ws)
+            }
+            CompletableFuture.completedFuture(updatedProjects)
+        }
+    }
+
+    @TestOnly
+    private fun modifyProjectsSync(f: (List<CargoProjectImpl>) -> CompletableFuture<List<CargoProjectImpl>>) {
+        modifyProjects(f).get(1, TimeUnit.MINUTES)
     }
 
     override fun getState(): Element {
@@ -234,8 +267,10 @@ data class CargoProjectImpl(
     private val projectService: CargoProjectsServiceImpl,
     private val rawWorkspace: CargoWorkspace? = null,
     private val stdlib: StandardLibrary? = null,
+    override val rustcInfo: RustcInfo? = null,
     override val workspaceStatus: CargoProject.UpdateStatus = UpdateStatus.NeedsUpdate,
-    override val stdlibStatus: CargoProject.UpdateStatus = UpdateStatus.NeedsUpdate
+    override val stdlibStatus: CargoProject.UpdateStatus = UpdateStatus.NeedsUpdate,
+    override val rustcInfoStatus: UpdateStatus = UpdateStatus.NeedsUpdate
 ) : CargoProject {
 
     private val projectDirectory get() = manifest.parent
@@ -271,7 +306,9 @@ data class CargoProjectImpl(
                 stdlibStatus = UpdateStatus.UpdateFailed("Project directory does not exist"))
             )
         }
-        return refreshStdlib().thenCompose { it.refreshWorkspace() }
+        return refreshRustcInfo()
+            .thenCompose { it.refreshStdlib() }
+            .thenCompose { it.refreshWorkspace() }
     }
 
     private fun refreshStdlib(): CompletableFuture<CargoProjectImpl> {
@@ -309,6 +346,21 @@ data class CargoProjectImpl(
         is TaskResult.Err -> copy(workspaceStatus = UpdateStatus.UpdateFailed(result.reason))
     }
 
+    private fun refreshRustcInfo(): CompletableFuture<CargoProjectImpl> {
+        val toolchain = toolchain
+            ?: return CompletableFuture.completedFuture(copy(rustcInfoStatus = UpdateStatus.UpdateFailed(
+                "Can't get rustc info, no Rust toolchain"
+            )))
+
+        return fetchRustcInfo(project, projectService.taskQueue, toolchain, projectDirectory)
+            .thenApply(this::withRustcInfo)
+    }
+
+    private fun withRustcInfo(result: TaskResult<RustcInfo>): CargoProjectImpl = when (result) {
+        is TaskResult.Ok -> copy(rustcInfo = result.value, rustcInfoStatus = UpdateStatus.UpToDate)
+        is TaskResult.Err -> copy(rustcInfoStatus = UpdateStatus.UpdateFailed(result.reason))
+    }
+
     override fun toString(): String =
         "CargoProject(manifest = $manifest)"
 }
@@ -337,10 +389,29 @@ private fun doRefresh(project: Project, projects: List<CargoProjectImpl>): Compl
                     break
                 }
             }
+
+            setupProjectRoots(project, updatedProjects)
             updatedProjects
         }
 }
 
+private fun setupProjectRoots(project: Project, cargoProjects: List<CargoProject>) {
+    for (cargoProject in cargoProjects) {
+        val workspacePackages = cargoProject.workspace?.packages
+            .orEmpty()
+            .filter { it.origin == PackageOrigin.WORKSPACE }
+
+        for (pkg in workspacePackages) {
+            val packageContentRoot = pkg.contentRoot ?: continue
+            val packageModule = runReadAction { ModuleUtilCore.findModuleForFile(packageContentRoot, project) }
+                ?: continue
+            ModuleRootModificationUtil.updateModel(packageModule) { rootModel ->
+                val contentEntry = rootModel.contentEntries.singleOrNull() ?: return@updateModel
+                contentEntry.setup(packageContentRoot)
+            }
+        }
+    }
+}
 
 private fun fetchStdlib(
     project: Project,
@@ -352,10 +423,10 @@ private fun fetchStdlib(
         val download = rustup.downloadStdlib()
         when (download) {
             is Rustup.DownloadResult.Ok -> {
-                val lib = StandardLibrary.fromFile(download.library)
+                val lib = StandardLibrary.fromFile(download.value)
                 if (lib == null) {
                     err("" +
-                        "corrupted standard library: ${download.library.presentableUrl}"
+                        "corrupted standard library: ${download.value.presentableUrl}"
                     )
                 } else {
                     ok(lib)
@@ -395,5 +466,27 @@ private fun fetchCargoWorkspace(
         } catch (e: ExecutionException) {
             err(e.message ?: "failed to run Cargo")
         }
+    }
+}
+
+private fun fetchRustcInfo(
+    project: Project,
+    queue: BackgroundTaskQueue,
+    toolchain: RustToolchain,
+    projectDirectory: Path
+): CompletableFuture<TaskResult<RustcInfo>> {
+    return runAsyncTask(project, queue, "Getting toolchain version") {
+        progress.isIndeterminate = true
+        if (!toolchain.looksLikeValidToolchain()) {
+            return@runAsyncTask err(
+                "invalid Rust toolchain ${toolchain.presentableLocation}"
+            )
+        }
+
+        val sysroot = toolchain.getSysroot(projectDirectory)
+            ?: return@runAsyncTask err("failed to get project sysroot")
+        val versions = toolchain.queryVersions()
+
+        ok(RustcInfo(sysroot, versions.rustc))
     }
 }

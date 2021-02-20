@@ -863,7 +863,7 @@ class RsExpressionTypeInferenceTest : RsTypificationTestBase() {
         }
         fn main() {
             let a = UnknownStruct { f1: 1, ..Default::default() };
-        }                                                  //^ Self
+        }                                                  //^ <unknown>
     """)
 
     fun `test index expr of unresolved path`() = testExpr("""
@@ -1048,12 +1048,31 @@ class RsExpressionTypeInferenceTest : RsTypificationTestBase() {
         } //^ i32
     """)
 
-    fun `test type of ambiguously resolved paths is unknown`() = testExpr("""
+    fun `test type of ambiguously resolved paths is unknown 1`() = testExpr("""
         struct S;
         struct S;
         fn main() {
             let a: S;
             a;
+        } //^ <unknown>
+    """)
+
+    fun `test type of ambiguously resolved paths is unknown 2`() = testExpr("""
+        struct S;
+        struct S;
+        fn main() {
+            let a = S;
+            a;
+        } //^ <unknown>
+    """)
+
+    /** part of [issue 2688](https://github.com/intellij-rust/intellij-rust/issues/2688) */
+    fun `test call expr with callee of struct without fields type`() = testExpr("""
+        struct S;
+        fn main() {
+            let a = S;
+            let b = a();
+            b;
         } //^ <unknown>
     """)
 }

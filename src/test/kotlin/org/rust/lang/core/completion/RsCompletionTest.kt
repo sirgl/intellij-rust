@@ -5,6 +5,10 @@
 
 package org.rust.lang.core.completion
 
+import org.rust.ProjectDescriptor
+import org.rust.WithStdlibAndDependencyRustProjectDescriptor
+import org.rust.WithStdlibRustProjectDescriptor
+
 class RsCompletionTest : RsCompletionTestBase() {
     fun `test local variable`() = doSingleCompletion("""
         fn foo(quux: i32) { qu/*caret*/ }
@@ -82,7 +86,7 @@ class RsCompletionTest : RsCompletionTestBase() {
 
     fun `test path`() = doSingleCompletion("""
         mod foo {
-            mod bar { fn frobnicate() {} }
+            pub mod bar { pub fn frobnicate() {} }
         }
         fn frobfrobfrob() {}
 
@@ -91,7 +95,7 @@ class RsCompletionTest : RsCompletionTestBase() {
         }
     """, """
         mod foo {
-            mod bar { fn frobnicate() {} }
+            pub mod bar { pub fn frobnicate() {} }
         }
         fn frobfrobfrob() {}
 
@@ -207,14 +211,14 @@ class RsCompletionTest : RsCompletionTestBase() {
     """)
 
     fun `test wildcard imports`() = doSingleCompletion("""
-        mod foo { fn transmogrify() {} }
+        mod foo { pub fn transmogrify() {} }
 
         fn main() {
             use self::foo::*;
             trans/*caret*/
         }
     """, """
-        mod foo { fn transmogrify() {} }
+        mod foo { pub fn transmogrify() {} }
 
         fn main() {
             use self::foo::*;
@@ -331,7 +335,7 @@ class RsCompletionTest : RsCompletionTestBase() {
         }
     """)
 
-    fun `test child file`() = doSingleCompletionMultiflie("""
+    fun `test child file`() = doSingleCompletionMultifile("""
     //- main.rs
         use foo::Spam;
         mod foo;
@@ -345,7 +349,7 @@ class RsCompletionTest : RsCompletionTestBase() {
         fn main() { let _ = Spam::Quux/*caret*/; }
     """)
 
-    fun `test parent file`() = doSingleCompletionMultiflie("""
+    fun `test parent file`() = doSingleCompletionMultifile("""
     //- main.rs
         mod foo;
         pub enum Spam { Quux, Eggs }
@@ -358,7 +362,7 @@ class RsCompletionTest : RsCompletionTestBase() {
         fn foo() { let _ = Spam::Quux/*caret*/; }
     """)
 
-    fun `test parent file 2`() = doSingleCompletionMultiflie("""
+    fun `test parent file 2`() = doSingleCompletionMultifile("""
     //- main.rs
         mod foo;
         pub enum Spam { Quux, Eggs }
@@ -572,5 +576,117 @@ class RsCompletionTest : RsCompletionTestBase() {
     """, """
         trait Tr { type Item; }
         type T = Tr<Item/*caret*/>;
+    """)
+
+    fun `test complete crate with double colon in use path`() = doSingleCompletion("""
+        use cra/*caret*/
+    """, """
+        use crate::/*caret*/
+    """)
+
+    fun `test complete crate with double colon in general path`() = doSingleCompletion("""
+       fn main() {
+            let x = cra/*caret*/
+       }
+    """, """
+       fn main() {
+            let x = crate::/*caret*/
+       }
+    """)
+
+    fun `test complete paths in include macro`() = doSingleCompletionMultifile("""
+    //- main.rs
+        include!("fo/*caret*/");
+    //- foo.rs
+        pub struct Foo;
+    """, """
+        include!("foo.rs/*caret*/");
+    """)
+
+    fun `test complete path in path attribute on mod decl`() = doSingleCompletionMultifile("""
+    //- main.rs
+        #[path="b/*caret*/"]
+        mod foo;
+    //- bar.rs
+        fn bar() {}
+    """, """
+        #[path="bar.rs/*caret*/"]
+        mod foo;
+    """)
+
+    fun `test complete rust file path in path attribute`() = doSingleCompletionMultifile("""
+    //- main.rs
+        #[path="b/*caret*/"]
+        mod foo;
+    //- bar.rs
+        fn bar() {}
+    //- baz.txt
+        // some text
+    """, """
+        #[path="bar.rs/*caret*/"]
+        mod foo;
+    """)
+
+    fun `test complete path in path attribute on mod`() = doSingleCompletionMultifile("""
+    //- main.rs
+        #[path="ba/*caret*/"]
+        mod foo {
+        }
+    //- baz/bar.rs
+        fn bar() {}
+    """, """
+        #[path="baz/*caret*/"]
+        mod foo {
+        }
+    """)
+
+    fun `test complete path in path attribute on inner mod decl`() = doSingleCompletionMultifile("""
+    //- main.rs
+        #[path="baz"]
+        mod foo {
+            #[path="ba/*caret*/"]
+            mod qqq;
+        }
+    //- baz/bar.rs
+        fn bar() {}
+    """, """
+        #[path="baz"]
+        mod foo {
+            #[path="bar.rs/*caret*/"]
+            mod qqq;
+        }
+    """)
+
+    fun `test private function`() = checkNoCompletion("""
+        mod foo { fn bar() {} }
+        fn main() {
+            foo::ba/*caret*/
+        }
+    """)
+
+    fun `test private mod`() = checkNoCompletion("""
+        mod foo { mod bar {} }
+        fn main() {
+            foo::ba/*caret*/
+        }
+    """)
+
+    fun `test private enum`() = checkNoCompletion("""
+        mod foo { enum MyEnum {} }
+        fn main() {
+            foo::MyEn/*caret*/
+        }
+    """)
+
+    @ProjectDescriptor(WithStdlibRustProjectDescriptor::class)
+    fun `test private extern crate`() = checkNoCompletion("""
+        mod foo { extern crate std; }
+        pub use foo::st/*caret*/
+    """)
+
+    @ProjectDescriptor(WithStdlibAndDependencyRustProjectDescriptor::class)
+    fun `test no std completion`() = checkNoCompletion("""
+        extern crate dep_lib_target;
+        pub use dep_lib_target::st/*caret*/
     """)
 }

@@ -4,10 +4,10 @@ import org.jetbrains.kotlin.gradle.tasks.KotlinCompile
 import de.undercouch.gradle.tasks.download.Download
 import org.gradle.api.internal.HasConvention
 import org.gradle.api.tasks.SourceSet
-import org.jetbrains.grammarkit.GrammarKitPluginExtension
 import org.jetbrains.grammarkit.tasks.GenerateLexer
 import org.jetbrains.grammarkit.tasks.GenerateParser
-import org.jetbrains.kotlin.gradle.plugin.KotlinSourceSet
+// since kotlin 1.3-rc `KotlinSourceSet` moved back to `org.jetbrains.kotlin.gradle.plugin` package
+import org.jetbrains.kotlin.gradle.plugin.source.KotlinSourceSet
 import org.gradle.api.JavaVersion.VERSION_1_8
 import org.gradle.api.tasks.testing.logging.TestExceptionFormat
 import org.gradle.api.tasks.testing.logging.TestLogEvent
@@ -20,21 +20,24 @@ import kotlin.concurrent.thread
 buildscript {
     repositories {
         maven { setUrl("https://jitpack.io") }
+        maven { setUrl("https://dl.bintray.com/kotlin/kotlin-eap") }
     }
     dependencies {
-        classpath("com.github.hurricup:gradle-grammar-kit-plugin:2017.1.1")
+        classpath("com.github.hurricup:gradle-grammar-kit-plugin:2018.1.7")
+        classpath("org.jetbrains.kotlin:kotlin-gradle-plugin:1.3-M2")
     }
 }
 
 val CI = System.getenv("CI") != null
 
 val channel = prop("publishChannel")
+val platformVersion = prop("platformVersion")
 
 plugins {
     idea
-    kotlin("jvm") version "1.2.40"
-    id("org.jetbrains.intellij") version "0.3.1"
-    id("de.undercouch.download") version "3.2.0"
+    id("org.jetbrains.intellij") version "0.3.7"
+    id("de.undercouch.download") version "3.4.3"
+    id("net.saliman.properties") version "1.4.6"
 }
 
 idea {
@@ -54,6 +57,7 @@ allprojects {
 
     repositories {
         mavenCentral()
+        maven { setUrl("https://dl.bintray.com/kotlin/kotlin-eap") }
     }
 
     idea {
@@ -75,10 +79,6 @@ allprojects {
         }
     }
 
-    configure<GrammarKitPluginExtension> {
-        grammarKitRelease = "1.5.2"
-    }
-
     tasks.withType<PublishTask> {
         username(prop("publishUsername"))
         password(prop("publishPassword"))
@@ -98,15 +98,17 @@ allprojects {
         targetCompatibility = VERSION_1_8
     }
 
-    java.sourceSets {
+    sourceSets {
         getByName("main").java.srcDirs("src/gen")
     }
 
     afterEvaluate {
         tasks.withType<AbstractTestTask> {
             testLogging {
-                events = setOf(TestLogEvent.PASSED, TestLogEvent.SKIPPED, TestLogEvent.FAILED)
-                exceptionFormat = TestExceptionFormat.FULL
+                if (hasProp("showTestStatus") && prop("showTestStatus").toBoolean()) {
+                    events = setOf(TestLogEvent.PASSED, TestLogEvent.SKIPPED, TestLogEvent.FAILED)
+                    exceptionFormat = TestExceptionFormat.FULL
+                }
             }
         }
     }
@@ -116,12 +118,12 @@ val channelSuffix = if (channel.isBlank()) "" else "-$channel"
 
 project(":") {
     val clionVersion = prop("clionVersion")
-    val versionSuffix = "-${prop("compatibilitySuffix")}$channelSuffix"
+    val versionSuffix = "-$platformVersion$channelSuffix"
     version = "0.2.0.${prop("buildNumber")}$versionSuffix"
     intellij {
         pluginName = "intellij-rust"
 //        alternativeIdePath = "deps/clion-$clionVersion"
-        setPlugins(project(":intellij-toml"))
+        setPlugins(project(":intellij-toml"), "IntelliLang")
     }
 
     repositories {
@@ -129,16 +131,16 @@ project(":") {
     }
 
     dependencies {
-        compileOnly("org.jetbrains.kotlin:kotlin-stdlib-jdk8")
-        compile("org.jetbrains:markdown:0.1.12") {
+        compile("org.jetbrains:markdown:0.1.28") {
             exclude(module = "kotlin-runtime")
             exclude(module = "kotlin-stdlib")
         }
     }
 
-    java.sourceSets {
+    sourceSets {
+        getByName("main").kotlin.srcDirs("src/$platformVersion/kotlin")
         create("debugger") {
-            kotlin.srcDirs("debugger/src/main/kotlin")
+            kotlin.srcDirs("debugger/src/main/kotlin", "debugger/src/$platformVersion/kotlin")
             compileClasspath += getByName("main").compileClasspath +
                 getByName("main").output +
                 files("deps/clion-$clionVersion/lib/clion.jar")
@@ -146,7 +148,7 @@ project(":") {
     }
 
     tasks.withType<Jar> {
-        from(java.sourceSets.getByName("debugger").output)
+        from(sourceSets.getByName("debugger").output)
     }
 
     val generateRustLexer = task<GenerateLexer>("generateRustLexer") {
@@ -271,7 +273,9 @@ fun commitChangelog(): String {
 }
 
 fun commitNightly() {
-    val ideaArtifactName = prop("ideaArtifactName")
+    // TODO: extract the latest versions of all supported platforms
+    val ideaArtifactName = "$platformVersion-EAP-SNAPSHOT"
+
     val versionUrl = URL("https://www.jetbrains.com/intellij-repository/snapshots/com/jetbrains/intellij/idea/BUILD/$ideaArtifactName/BUILD-$ideaArtifactName.txt")
     val ideaVersion = versionUrl.openStream().bufferedReader().readLine().trim()
     println("\n    NEW IDEA: $ideaVersion\n")
@@ -298,6 +302,8 @@ fun commitNightly() {
     listOf("git", "commit", "-m", ":arrow_up: nightly IDEA & rust").execute()
     "git push origin nightly".execute()
 }
+
+fun hasProp(name: String): Boolean = extra.has(name)
 
 fun prop(name: String): String =
     extra.properties[name] as? String

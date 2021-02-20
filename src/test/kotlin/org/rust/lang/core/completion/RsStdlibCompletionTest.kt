@@ -5,11 +5,11 @@
 
 package org.rust.lang.core.completion
 
-import com.intellij.testFramework.LightProjectDescriptor
+import org.rust.ProjectDescriptor
+import org.rust.WithStdlibRustProjectDescriptor
 
+@ProjectDescriptor(WithStdlibRustProjectDescriptor::class)
 class RsStdlibCompletionTest : RsCompletionTestBase() {
-    override fun getProjectDescriptor(): LightProjectDescriptor = WithStdlibRustProjectDescriptor
-
     fun `test prelude`() = @Suppress("DEPRECATION") checkSingleCompletion("drop()", """
         fn main() {
             dr/*caret*/
@@ -48,6 +48,16 @@ class RsStdlibCompletionTest : RsCompletionTestBase() {
         fn main() { vec/*caret*/ }
     """, """
         fn main() { vec![/*caret*/] }
+    """)
+
+    fun `test macro in use item`() = doSingleCompletion("""
+       #![feature(use_extern_macros)]
+
+       pub use std::unimpl/*caret*/
+    """, """
+       #![feature(use_extern_macros)]
+
+       pub use std::unimplemented;/*caret*/
     """)
 }
 
