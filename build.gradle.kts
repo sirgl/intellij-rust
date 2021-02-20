@@ -4,7 +4,6 @@ import org.jetbrains.kotlin.gradle.tasks.KotlinCompile
 import de.undercouch.gradle.tasks.download.Download
 import org.gradle.api.internal.HasConvention
 import org.gradle.api.tasks.SourceSet
-import org.jetbrains.grammarkit.GrammarKitPluginExtension
 import org.jetbrains.grammarkit.tasks.GenerateLexer
 import org.jetbrains.grammarkit.tasks.GenerateParser
 import org.jetbrains.kotlin.gradle.plugin.KotlinSourceSet
@@ -12,29 +11,30 @@ import org.gradle.api.JavaVersion.VERSION_1_8
 import org.gradle.api.tasks.testing.logging.TestExceptionFormat
 import org.gradle.api.tasks.testing.logging.TestLogEvent
 import org.gradle.jvm.tasks.Jar
+import java.io.Writer
+import org.jetbrains.intellij.tasks.PrepareSandboxTask
 import java.net.HttpURLConnection
 import java.net.URL
 import java.nio.file.Path
 import kotlin.concurrent.thread
 
-buildscript {
-    repositories {
-        maven { setUrl("https://jitpack.io") }
-    }
-    dependencies {
-        classpath("com.github.hurricup:gradle-grammar-kit-plugin:2017.1.1")
-    }
-}
-
 val CI = System.getenv("CI") != null
 
 val channel = prop("publishChannel")
+val platformVersion = prop("platformVersion")
+
+val excludedJars = listOf(
+    "java-api.jar",
+    "java-impl.jar"
+)
 
 plugins {
     idea
-    kotlin("jvm") version "1.2.40"
-    id("org.jetbrains.intellij") version "0.3.1"
-    id("de.undercouch.download") version "3.2.0"
+    kotlin("jvm") version "1.3.0"
+    id("org.jetbrains.intellij") version "0.3.12"
+    id("org.jetbrains.grammarkit") version "2018.2.1"
+    id("de.undercouch.download") version "3.4.3"
+    id("net.saliman.properties") version "1.4.6"
 }
 
 idea {
@@ -75,10 +75,6 @@ allprojects {
         }
     }
 
-    configure<GrammarKitPluginExtension> {
-        grammarKitRelease = "1.5.2"
-    }
-
     tasks.withType<PublishTask> {
         username(prop("publishUsername"))
         password(prop("publishPassword"))
@@ -98,16 +94,30 @@ allprojects {
         targetCompatibility = VERSION_1_8
     }
 
-    java.sourceSets {
+    sourceSets {
         getByName("main").java.srcDirs("src/gen")
     }
 
     afterEvaluate {
+        val mainSourceSet = sourceSets.getByName("main")
+        val mainClassPath = mainSourceSet.compileClasspath
+        val exclusion = mainClassPath.filter { it.name in excludedJars }
+        mainSourceSet.compileClasspath = mainClassPath - exclusion
+
         tasks.withType<AbstractTestTask> {
             testLogging {
-                events = setOf(TestLogEvent.PASSED, TestLogEvent.SKIPPED, TestLogEvent.FAILED)
-                exceptionFormat = TestExceptionFormat.FULL
+                if (hasProp("showTestStatus") && prop("showTestStatus").toBoolean()) {
+                    events = setOf(TestLogEvent.PASSED, TestLogEvent.SKIPPED, TestLogEvent.FAILED)
+                    exceptionFormat = TestExceptionFormat.FULL
+                }
             }
+        }
+
+        // We need to prevent the platform-specific shared JNA library to loading from the system library paths,
+        // because otherwise it can lead to compatibility issues.
+        // Also note that IDEA does the same thing at startup, and not only for tests.
+        tasks.withType<Test>().configureEach {
+            systemProperty("jna.nosys", "true")
         }
     }
 }
@@ -116,12 +126,12 @@ val channelSuffix = if (channel.isBlank()) "" else "-$channel"
 
 project(":") {
     val clionVersion = prop("clionVersion")
-    val versionSuffix = "-${prop("compatibilitySuffix")}$channelSuffix"
+    val versionSuffix = "-$platformVersion$channelSuffix"
     version = "0.2.0.${prop("buildNumber")}$versionSuffix"
     intellij {
         pluginName = "intellij-rust"
 //        alternativeIdePath = "deps/clion-$clionVersion"
-        setPlugins(project(":intellij-toml"))
+        setPlugins(project(":intellij-toml"), "IntelliLang")
     }
 
     repositories {
@@ -129,16 +139,16 @@ project(":") {
     }
 
     dependencies {
-        compileOnly("org.jetbrains.kotlin:kotlin-stdlib-jdk8")
-        compile("org.jetbrains:markdown:0.1.12") {
+        compile("org.jetbrains:markdown:0.1.30") {
             exclude(module = "kotlin-runtime")
             exclude(module = "kotlin-stdlib")
         }
     }
 
-    java.sourceSets {
+    sourceSets {
+        getByName("main").kotlin.srcDirs("src/$platformVersion/kotlin")
         create("debugger") {
-            kotlin.srcDirs("debugger/src/main/kotlin")
+            kotlin.srcDirs("debugger/src/main/kotlin", "debugger/src/$platformVersion/kotlin")
             compileClasspath += getByName("main").compileClasspath +
                 getByName("main").output +
                 files("deps/clion-$clionVersion/lib/clion.jar")
@@ -146,7 +156,7 @@ project(":") {
     }
 
     tasks.withType<Jar> {
-        from(java.sourceSets.getByName("debugger").output)
+        from(sourceSets.getByName("debugger").output)
     }
 
     val generateRustLexer = task<GenerateLexer>("generateRustLexer") {
@@ -203,6 +213,12 @@ project(":") {
                 .map { it.configurations }
                 .flatMap { listOf(it.compile, it.testCompile) }
                 .forEach { it.resolve() }
+        }
+    }
+
+    tasks.withType<PrepareSandboxTask> {
+        from("prettyPrinters") {
+            into("${intellij.pluginName}/prettyPrinters")
         }
     }
 }
@@ -271,7 +287,9 @@ fun commitChangelog(): String {
 }
 
 fun commitNightly() {
-    val ideaArtifactName = prop("ideaArtifactName")
+    // TODO: extract the latest versions of all supported platforms
+    val ideaArtifactName = "$platformVersion-EAP-SNAPSHOT"
+
     val versionUrl = URL("https://www.jetbrains.com/intellij-repository/snapshots/com/jetbrains/intellij/idea/BUILD/$ideaArtifactName/BUILD-$ideaArtifactName.txt")
     val ideaVersion = versionUrl.openStream().bufferedReader().readLine().trim()
     println("\n    NEW IDEA: $ideaVersion\n")
@@ -298,6 +316,52 @@ fun commitNightly() {
     listOf("git", "commit", "-m", ":arrow_up: nightly IDEA & rust").execute()
     "git push origin nightly".execute()
 }
+
+task("updateCompilerFeatures") {
+    doLast {
+        val featureGateUrl = URL("https://raw.githubusercontent.com/rust-lang/rust/master/src/libsyntax/feature_gate.rs")
+        val text = featureGateUrl.openStream().bufferedReader().readText()
+        val file = File("src/main/kotlin/org/rust/lang/core/CompilerFeatures.kt")
+        file.bufferedWriter().use {
+            it.writeln("""
+                /*
+                 * Use of this source code is governed by the MIT license that can be
+                 * found in the LICENSE file.
+                 */
+
+                @file:Suppress("unused")
+
+                package org.rust.lang.core
+
+                import org.rust.lang.core.FeatureState.*
+
+            """.trimIndent())
+            it.writeFeatures("active", text)
+            it.writeln()
+            it.writeFeatures("accepted", text)
+        }
+    }
+}
+
+fun Writer.writeFeatures(featureSet: String, text: String) {
+    """((\s*//.*\n)*)\s*\($featureSet, (\w+), (\"\d+\.\d+\.\d+\"), .*\),"""
+        .toRegex(RegexOption.MULTILINE)
+        .findAll(text)
+        .forEach { matcher ->
+            val (comments, _, featureName, version) = matcher.destructured
+            if (comments.isNotEmpty()) {
+                writeln(comments.trimIndent().trim())
+            }
+            writeln("""val ${featureName.toUpperCase()} = CompilerFeature("$featureName", ${featureSet.toUpperCase()}, $version)""")
+        }
+}
+
+fun Writer.writeln(str: String = "") {
+    write(str)
+    write("\n")
+}
+
+fun hasProp(name: String): Boolean = extra.has(name)
 
 fun prop(name: String): String =
     extra.properties[name] as? String

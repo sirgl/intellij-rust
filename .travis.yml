@@ -9,22 +9,33 @@ language: java
 jdk: oraclejdk8
 
 env:
+  global:
+    - OLD_RUST_VERSION=1.25.0
+    - CURRENT_RUST_VERSION=1.30.0
+    - NIGHLY_RUST_VERSION=nightly-2018-11-09
+    - RUST_SRC_WITH_SYMLINK=$HOME/.rust-src
   matrix:
-    - RUST_VERSION=nightly-2018-04-15 ORG_GRADLE_PROJECT_sinceBuild=181 ORG_GRADLE_PROJECT_ideaVersion=181.4668.14 # modified by script
-    - RUST_VERSION=1.25.0 ORG_GRADLE_PROJECT_sinceBuild=181 ORG_GRADLE_PROJECT_ideaVersion=2018.1
+    # 182 platform
+    - RUST_VERSION=$NIGHLY_RUST_VERSION ORG_GRADLE_PROJECT_platformVersion=182 ORG_GRADLE_PROJECT_sinceBuild=182 ORG_GRADLE_PROJECT_ideaVersion=182.4892.20 # modified by script
+    - RUST_VERSION=$CURRENT_RUST_VERSION ORG_GRADLE_PROJECT_platformVersion=182
+    - RUST_VERSION=$OLD_RUST_VERSION ORG_GRADLE_PROJECT_platformVersion=182 ORG_GRADLE_PROJECT_sinceBuild=182 ORG_GRADLE_PROJECT_ideaVersion=2018.2
+    # 183 platform
+    - RUST_VERSION=$CURRENT_RUST_VERSION ORG_GRADLE_PROJECT_platformVersion=183
 
 install: true
 
 before_script:
   - curl https://sh.rustup.rs -sSf | sh -s -- --default-toolchain $RUST_VERSION -y
   - export PATH=$HOME/.cargo/bin:$PATH
+  - rustup component add rust-src
   - rustup component add rustfmt-preview
+  - ln -s $(rustc --print sysroot)/lib/rustlib/src/rust/src $RUST_SRC_WITH_SYMLINK
   - ./check-license.sh
   - ./gradlew :resolveDependencies -Pkotlin.incremental=false --no-daemon
   - ./gradlew assemble testClasses -Pkotlin.incremental=false --no-daemon
 
 script:
-  - ./gradlew check -Pkotlin.incremental=false --no-daemon
+  - travis_wait ./gradlew check -Pkotlin.incremental=false --no-daemon
 
 # https://docs.travis-ci.com/user/languages/java/#Caching
 before_cache:

@@ -5,9 +5,15 @@
 
 package org.rust.ide.annotator
 
-class RsErrorAnnotatorTest : RsAnnotatorTestBase() {
-    override val dataPath = "org/rust/ide/annotator/fixtures/errors"
+import org.rust.MockEdition
+import org.rust.MockRustcVersion
+import org.rust.ProjectDescriptor
+import org.rust.WithStdlibRustProjectDescriptor
+import org.rust.cargo.project.workspace.CargoWorkspace
 
+@ProjectDescriptor(WithStdlibRustProjectDescriptor::class)
+class RsErrorAnnotatorTest : RsAnnotationTestBase() {
+    override val dataPath = "org/rust/ide/annotator/fixtures/errors"
     fun `test invalid module declarations`() = doTest("helper.rs")
 
     fun `test create file quick fix`() = checkByDirectory {
@@ -125,7 +131,7 @@ class RsErrorAnnotatorTest : RsAnnotatorTestBase() {
             fn variadic_2(p1: u32, p2: u32, ...);
         }
 
-        fn main() {
+        unsafe fn test() {
             variadic_1<error descr="This function takes at least 1 parameter but 0 parameters were supplied [E0060]">()</error>;
             variadic_1(42);
             variadic_1(42, 43);
@@ -432,6 +438,27 @@ class RsErrorAnnotatorTest : RsAnnotatorTestBase() {
         fn foo(a: &'static str) {}
     """)
 
+    fun `test not applied to underscore lifetimes E0261`() = checkErrors("""
+        const ZERO: &'_ u32 = &0;
+        fn foo(a: &'_ str) {}
+    """)
+
+    fun `test reserved lifetime name ('static) E0262`() = checkErrors("""
+        fn foo1<<error descr="`'static` is a reserved lifetime name [E0262]">'static</error>>(x: &'static str) {}
+        struct Str1<<error>'static</error>> { a: &'static u32 }
+        impl<<error>'static</error>> Str1<'static> {}
+        enum En1<<error>'static</error>> { A(&'static str) }
+        trait Tr1<<error>'static</error>> {}
+    """)
+
+    fun `test reserved lifetime name ('_) E0262`() = checkErrors("""
+        fn foo2<<error descr="`'_` is a reserved lifetime name [E0262]">'_</error>>(x: &'_ str) {}
+        struct Str2<<error>'_</error>> { a: &'_ u32 }
+        impl<<error>'_</error>> Str2<'_> {}
+        enum En2<<error>'_</error>> { A(&'_ str) }
+        trait Tr2<<error>'_</error>> {}
+    """)
+
     fun `test lifetime name duplication in generic params E0263`() = checkErrors("""
         fn foo<'a, 'b>(x: &'a str, y: &'b str) { }
         struct Str<'a, 'b> { a: &'a u32, b: &'b f64 }
@@ -467,6 +494,18 @@ class RsErrorAnnotatorTest : RsAnnotatorTestBase() {
         impl T for () {
             fn foo() {}
             fn <error descr="Method `quux` is not a member of trait `T` [E0407]">quux</error>() {}
+        }
+    """)
+
+    fun `test no E0407 for method defined with a macro`() = checkErrors("""
+        macro_rules! foo {
+            ($ i:ident, $ j:ty) => { fn $ i(&self) -> $ j { unimplemented!() } }
+        }
+        trait T {
+            foo!(foo, ());
+        }
+        impl T for () {
+            fn foo(&self) {}
         }
     """)
 
@@ -710,7 +749,7 @@ class RsErrorAnnotatorTest : RsAnnotatorTestBase() {
         }
     """)
 
-    fun `testE0424 self in impl`() = checkErrors("""
+    fun `test self in static method E0424`() = checkErrors("""
         struct Foo;
 
         impl Foo {
@@ -720,8 +759,23 @@ class RsErrorAnnotatorTest : RsAnnotatorTestBase() {
         }
     """)
 
+    fun `test self in vis restriction in static method no E0424`() = checkErrors("""
+        struct Foo;
+
+        impl Foo {
+            pub(self) fn foo() {}
+        }
+    """)
+
     fun `test self expression outside function`() = checkErrors("""
         const C: () = <error descr="self value is not available in this context">self</error>;
+    """)
+
+    fun `test do not annotate 'self' in visibility restriction`() = checkErrors("""
+        struct Foo {
+            pub(self) attr1: bool,
+            pub(in self) attr2: bool
+        }
     """)
 
     fun `test ignore non static E0424`() = checkErrors("""
@@ -747,7 +801,7 @@ class RsErrorAnnotatorTest : RsAnnotatorTestBase() {
         fn foo() {}
         fn bat() {}
         fn bar() {
-            use self::{foo};
+            use self::foo;
             use self::{foo,bat};
         }
     """)
@@ -758,7 +812,7 @@ class RsErrorAnnotatorTest : RsAnnotatorTestBase() {
             use m::*;
 
             fn main() {
-                foo(1, 2, 3);
+                unsafe { foo(1, 2, 3); }
                 bar<error>(92)</error>;
                 let _ = S {};
             }  //^
@@ -1122,5 +1176,179 @@ class RsErrorAnnotatorTest : RsAnnotatorTestBase() {
         trait Foo {
             fn foo() -> Self;
         }
+    """)
+
+    @MockRustcVersion("1.27.1")
+    fun `test crate visibility feature E0658`() = checkErrors("""
+        <error descr="`crate` visibility modifier is experimental [E0658]">crate</error> struct Foo;
+    """)
+
+    @MockRustcVersion("1.29.0-nightly")
+    fun `test crate visibility feature E0658 2`() = checkErrors("""
+        <error descr="`crate` visibility modifier is experimental [E0658]">crate</error> struct Foo;
+    """)
+
+    @MockRustcVersion("1.29.0-nightly")
+    fun `test crate visibility feature E0658 3`() = checkErrors("""
+        #![feature(crate_visibility_modifier)]
+
+        crate struct Foo;
+    """)
+
+    @MockRustcVersion("1.29.0-nightly")
+    fun `test crate visibility feature E0658 4`() = checkErrors("""
+        crate struct Foo;
+
+        mod foo {
+            #![feature(crate_visibility_modifier)]
+        }
+    """)
+
+    fun `test parenthesized lifetime bounds`() = checkErrors("""
+        fn foo<'a, T: <error descr="Parenthesized lifetime bounds are not supported">('a)</error>>(t: T) {
+            unimplemented!();
+        }
+    """)
+
+    @MockEdition(CargoWorkspace.Edition.EDITION_2018)
+    fun `test crate keyword not at the beginning E0433`() = checkErrors("""
+        use crate::foo::<error descr="`crate` in paths can only be used in start position [E0433]">crate</error>::Foo;
+    """)
+
+    @MockEdition(CargoWorkspace.Edition.EDITION_2018)
+    fun `test crate keyword not at the beginning in use group E0433`() = checkErrors("""
+        use crate::foo::{<error descr="`crate` in paths can only be used in start position [E0433]">crate</error>::Foo};
+    """)
+
+    @MockRustcVersion("1.28.0")
+    fun `test crate in path feature E0658`() = checkErrors("""
+        mod foo {
+            pub struct Foo;
+        }
+
+        use <error descr="`crate` in paths is experimental [E0658]">crate</error>::foo::Foo;
+    """)
+
+    @MockRustcVersion("1.29.0-nightly")
+    fun `test crate in path feature E0658 2`() = checkErrors("""
+        mod foo {
+            pub struct Foo;
+        }
+
+        use <error descr="`crate` in paths is experimental [E0658]">crate</error>::foo::Foo;
+    """)
+
+    @MockEdition(CargoWorkspace.Edition.EDITION_2018)
+    fun `test crate in path feature E0658 3`() = checkErrors("""
+        mod foo {
+            pub struct Foo;
+        }
+
+        use crate::foo::Foo;
+    """)
+
+    @MockRustcVersion("1.30.0")
+    fun `test crate in path feature E0658 4`() = checkErrors("""
+        mod foo {
+            pub struct Foo;
+        }
+
+        use crate::foo::Foo;
+    """)
+
+    @MockRustcVersion("1.28.0")
+    fun `test crate visibility restriction`() = checkErrors("""
+        pub(crate) fn foo() {}
+    """)
+
+    fun `test E0404 expected trait`() = checkErrors("""
+        struct S;
+        enum E {}
+        type T = S;
+        mod a {}
+        trait Trait {}
+        impl <error descr="Expected trait, found struct `S` [E0404]">S</error> for S {}
+        impl <error descr="Expected trait, found enum `E` [E0404]">E</error> for S {}
+        impl <error descr="Expected trait, found type alias `T` [E0404]">T</error> for S {}
+        impl <error descr="Expected trait, found module `a` [E0404]">a</error> for S {}
+        fn foo<A: <error descr="Expected trait, found struct `S` [E0404]">S</error>>() {}
+        impl Trait for S {}
+    """)
+
+    fun `test extern static requires unsafe`() = checkErrors("""
+        extern {
+            static C: i32;
+        }
+
+        fn main() {
+            let a = <error descr="Use of extern static is unsafe and requires unsafe function or block [E0133]">C</error>;
+        }
+    """)
+
+    fun `test need unsafe static mutable`() = checkErrors("""
+        static mut test : u8 = 0;
+
+        fn main() {
+            <error descr="Use of mutable static is unsafe and requires unsafe function or block [E0133]">test</error> += 1;
+        }
+    """)
+
+    fun `test not allowed try expr`() = checkErrors("""
+    fn foo(){
+        let a = <error descr="the `?` operator can only be applied to values that implement `std::ops::Try` [E0277]">92?</error>;
+    }
+    """)
+
+
+    fun `test try expr in function that not allow try expr`() = checkErrors("""
+    fn foo()->i32{
+        <error descr="the `?` operator can only be used in a function that returns `Result` or `Option` (or another type that implements `std::ops::Try`) [E0277]">Ok(92)?</error>;
+        92
+    }
+    """)
+
+    fun `test try expr unknown type`() = checkErrors("""
+    fn foo() {
+        something_unknown?;
+    }
+    """)
+
+    fun `test foo unknown return type`() = checkErrors("""
+    fn foo() -> something_unknown {
+        Ok(25)?;
+    }
+    """)
+
+    fun `test non triable in foo unknown return type`() = checkErrors("""
+    fn foo() -> something_unknown {
+        <error descr="the `?` operator can only be applied to values that implement `std::ops::Try` [E0277]">92?</error>;
+    }
+    """)
+
+    fun `test non triable in void foo `() = checkErrors("""
+    fn foo() {
+        <error descr="the `?` operator can only be applied to values that implement `std::ops::Try` [E0277]">92?</error>;
+    }
+    """)
+
+    fun `test triable in void foo `() = checkErrors("""
+    fn foo() {
+        <error descr="the `?` operator can only be used in a function that returns `Result` or `Option` (or another type that implements `std::ops::Try`) [E0277]">Ok(92)?</error>;
+    }
+    """)
+
+    fun `test non compatible errorTys`() = checkErrors("""
+    struct FooError;
+    struct ExprError;
+    fn foo() -> Result<i32, FooError> {
+        Err(ExprError{})<error descr="the trait `std::convert::From<ExprError>` is not implemented for `FooError`">?</error>
+    }
+    """)
+
+    fun `test unresolved errorTys`() = checkErrors("""
+    struct ExprError;
+    fn foo() -> Result<i32, FooError> {
+        Err(ExprError{})?
+    }
     """)
 }

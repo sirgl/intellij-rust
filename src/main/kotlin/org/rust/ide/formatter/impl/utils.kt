@@ -12,10 +12,10 @@ import com.intellij.psi.tree.IElementType
 import com.intellij.psi.tree.TokenSet
 import com.intellij.psi.tree.TokenSet.orSet
 import org.rust.lang.core.psi.RS_OPERATORS
-import org.rust.lang.core.psi.RsAttr
 import org.rust.lang.core.psi.RsElementTypes.*
 import org.rust.lang.core.psi.RsExpr
 import org.rust.lang.core.psi.RsStmt
+import org.rust.lang.core.psi.ext.RsAttr
 import org.rust.lang.core.psi.ext.RsItemElement
 import org.rust.lang.core.psi.ext.RsMod
 import org.rust.lang.core.psi.ext.elementType
@@ -29,7 +29,7 @@ val UNARY_OPS = ts(MINUS, MUL, EXCL, AND, ANDAND)
 
 val PAREN_DELIMITED_BLOCKS = orSet(ts(VALUE_PARAMETER_LIST, PAREN_EXPR, TUPLE_EXPR, TUPLE_TYPE, VALUE_ARGUMENT_LIST, PAT_TUP, TUPLE_FIELDS, VIS_RESTRICTION),
     SPECIAL_MACRO_ARGS)
-val PAREN_LISTS = orSet(PAREN_DELIMITED_BLOCKS, ts(PAT_ENUM))
+val PAREN_LISTS = orSet(PAREN_DELIMITED_BLOCKS, ts(PAT_TUPLE_STRUCT))
 
 val BRACK_DELIMITED_BLOCKS = orSet(ts(ARRAY_TYPE, ARRAY_EXPR), SPECIAL_MACRO_ARGS)
 val BRACK_LISTS = orSet(BRACK_DELIMITED_BLOCKS, ts(INDEX_EXPR))
@@ -72,7 +72,7 @@ val ASTNode.isFlatBraceBlock: Boolean
  * element for its _block_ part (e.g. `{...}`), for example [MOD_ITEM].
  */
 val ASTNode.isFlatBlock: Boolean
-    get() = isFlatBraceBlock || elementType == PAT_ENUM
+    get() = isFlatBraceBlock || elementType == PAT_TUPLE_STRUCT
 
 fun ASTNode.isBlockDelim(parent: ASTNode?): Boolean {
     if (parent == null) return false
@@ -80,7 +80,7 @@ fun ASTNode.isBlockDelim(parent: ASTNode?): Boolean {
     return when (elementType) {
         LBRACE, RBRACE -> parentType in BRACE_DELIMITED_BLOCKS || parent.isFlatBraceBlock
         LBRACK, RBRACK -> parentType in BRACK_LISTS
-        LPAREN, RPAREN -> parentType in PAREN_LISTS || parentType == PAT_ENUM
+        LPAREN, RPAREN -> parentType in PAREN_LISTS || parentType == PAT_TUPLE_STRUCT
         LT, GT -> parentType in ANGLE_LISTS
         OR -> parentType == VALUE_PARAMETER_LIST && parent.treeParent?.elementType == LAMBDA_EXPR
         else -> false

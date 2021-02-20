@@ -5,7 +5,7 @@
 
 package org.rust.ide.annotator
 
-class RsExpressionAnnotatorTest : RsAnnotatorTestBase() {
+class RsExpressionAnnotatorTest : RsAnnotationTestBase() {
 
     fun `test unnecessary parens`() = checkWarnings("""
 
@@ -146,6 +146,14 @@ class RsExpressionAnnotatorTest : RsAnnotatorTestBase() {
 
         fn main() {
             <error>foo()</error>;
+        }
+    """)
+
+    fun `test external ABI is unsafe`() = checkErrors("""
+        extern "C" { fn foo(); }
+
+        fn main() {
+            <error descr="Call to unsafe function requires unsafe function or block [E0133]">foo()</error>;
         }
     """)
 

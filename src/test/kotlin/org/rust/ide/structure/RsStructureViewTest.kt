@@ -6,17 +6,21 @@
 package org.rust.ide.structure
 
 import com.intellij.testFramework.PlatformTestUtil.assertTreeEqual
+import com.intellij.testFramework.PlatformTestUtil.expandAll
 import com.intellij.ui.RowIcon
-import com.intellij.util.ui.tree.TreeUtil
 import junit.framework.TestCase
 import org.intellij.lang.annotations.Language
+import org.rust.RsTestBase
 import org.rust.ide.presentation.getPresentationForStructure
-import org.rust.lang.RsTestBase
 import org.rust.lang.core.psi.ext.RsElement
 
 class RsStructureViewTest : RsTestBase() {
     fun `test functions`() = doTest("""
-        fn fn_foo () {}
+        fn fn_foo () {
+            fn fn_bar () {
+                fn fn_baz () {}
+            }
+        }
 
         #[test]
         fn test_something() { assert!(true); }
@@ -24,7 +28,9 @@ class RsStructureViewTest : RsTestBase() {
         fn double(x: i32) -> i32 { x * 2 }
     """, """
         -main.rs
-         fn_foo()
+         -fn_foo()
+          -fn_bar()
+           fn_baz()
          test_something()
          double(i32) -> i32
     """)
@@ -372,7 +378,7 @@ class RsStructureViewTest : RsTestBase() {
         val normExpected = expected.trimIndent() + "\n"
         myFixture.configureByText("main.rs", code)
         myFixture.testStructureView {
-            TreeUtil.expandAll(it.tree)
+            expandAll(it.tree)
             assertTreeEqual(it.tree, normExpected)
         }
     }

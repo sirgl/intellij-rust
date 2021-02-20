@@ -11,14 +11,18 @@ import org.rust.lang.core.psi.ext.RsNamedElement
 import java.util.*
 
 enum class Namespace(val itemName: String) {
-    Values("value"), Types("type"), Lifetimes("lifetime"), Macros("macro")
+    Types("type"),
+    Values("value"),
+    Lifetimes("lifetime"),
+    Macros("macro")
 }
 
 val TYPES: Set<Namespace> = EnumSet.of(Namespace.Types)
 val VALUES: Set<Namespace> = EnumSet.of(Namespace.Values)
 val LIFETIMES: Set<Namespace> = EnumSet.of(Namespace.Lifetimes)
 val MACROS: Set<Namespace> = EnumSet.of(Namespace.Macros)
-val TYPES_N_VALUES: Set<Namespace> = TYPES + VALUES
+val TYPES_N_VALUES: Set<Namespace> = EnumSet.of(Namespace.Types, Namespace.Values)
+val TYPES_N_VALUES_N_MACROS: Set<Namespace> = EnumSet.of(Namespace.Types, Namespace.Values, Namespace.Macros)
 
 val RsNamedElement.namespaces: Set<Namespace> get() = when (this) {
     is RsMod,
@@ -30,14 +34,15 @@ val RsNamedElement.namespaces: Set<Namespace> get() = when (this) {
 
     is RsPatBinding,
     is RsConstant,
-    is RsFunction,
-    is RsEnumVariant -> VALUES
+    is RsFunction -> VALUES
+
+    is RsEnumVariant -> if (blockFields == null) VALUES else TYPES
 
     is RsStructItem -> if (blockFields == null) TYPES_N_VALUES else TYPES
 
     is RsLifetimeParameter -> LIFETIMES
 
-    is RsMacroDefinition -> MACROS
+    is RsMacro -> MACROS
 
     else -> TYPES_N_VALUES
 }

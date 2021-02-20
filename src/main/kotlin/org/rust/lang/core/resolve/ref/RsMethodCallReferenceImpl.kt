@@ -13,10 +13,10 @@ import org.rust.lang.core.psi.RsMethodCall
 import org.rust.lang.core.psi.ext.RsElement
 import org.rust.lang.core.psi.ext.receiver
 import org.rust.lang.core.resolve.*
+import org.rust.lang.core.types.infer.containsTyOfClass
 import org.rust.lang.core.types.inference
-import org.rust.lang.core.types.ty.Substitution
 import org.rust.lang.core.types.ty.Ty
-import org.rust.lang.core.types.ty.emptySubstitution
+import org.rust.lang.core.types.ty.TyUnknown
 import org.rust.lang.core.types.type
 
 
@@ -31,12 +31,17 @@ class RsMethodCallReferenceImpl(
         val lookup = ImplLookup.relativeTo(element)
         val receiver = element.receiver.type
         return collectCompletionVariants {
-            processMethodCallExprResolveVariants(lookup, receiver, filterMethodCompletionVariants(it, lookup, receiver))
+            processMethodCallExprResolveVariants(lookup, receiver,
+                filterCompletionVariantsByVisibility(
+                    filterMethodCompletionVariantsByTraitBounds(it, lookup, receiver),
+                    element.containingMod
+                )
+            )
         }
     }
 
     override fun multiResolve(): List<RsElement> =
-        element.inference?.getResolvedMethod(element) ?: emptyList()
+        element.inference?.getResolvedMethod(element)?.map { it.element } ?: emptyList()
 }
 
 class RsFieldLookupReferenceImpl(
@@ -50,7 +55,14 @@ class RsFieldLookupReferenceImpl(
         val lookup = ImplLookup.relativeTo(element)
         val receiver = element.receiver.type
         return collectCompletionVariants {
-            processFieldExprResolveVariants(lookup, receiver, true, filterMethodCompletionVariants(it, lookup, receiver))
+            processDotExprResolveVariants(
+                lookup,
+                receiver,
+                filterCompletionVariantsByVisibility(
+                    filterMethodCompletionVariantsByTraitBounds(it, lookup, receiver),
+                    element.containingMod
+                )
+            )
         }
     }
 
@@ -68,8 +80,8 @@ fun resolveMethodCallReferenceWithReceiverType(
     lookup: ImplLookup,
     receiverType: Ty,
     methodCall: RsMethodCall
-): List<MethodCallee> {
-    return collectMethodResolveVariants(methodCall.referenceName) {
+): List<MethodResolveVariant> {
+    return collectResolveVariants(methodCall.referenceName) {
         processMethodCallExprResolveVariants(lookup, receiverType, it)
     }
 }
@@ -78,32 +90,41 @@ fun resolveFieldLookupReferenceWithReceiverType(
     lookup: ImplLookup,
     receiverType: Ty,
     expr: RsFieldLookup
-): List<RsElement> {
+): List<FieldResolveVariant> {
     return collectResolveVariants(expr.referenceName) {
-        processFieldExprResolveVariants(lookup, receiverType, false, it)
+        processFieldExprResolveVariants(lookup, receiverType, it)
     }
 }
 
-data class MethodCallee(
-    override val name: String,
-    override val element: RsFunction,
-    /**
-     * If the method defined in impl, this is the impl. If the method inherited from
-     * trait definition, this is the impl of the actual trait for the receiver type
-     */
-    val impl: RsImplItem?,
+interface DotExprResolveVariant : ScopeEntry {
     /** The receiver type after possible derefs performed */
-    val selfTy: Ty,
+    val selfTy: Ty
     /** The number of `*` dereferences should be performed on receiver to match `selfTy` */
     val derefCount: Int
-) : ScopeEntry {
-    /** Legacy subst. Do not really used */
-    override val subst: Substitution
-        get() = emptySubstitution
 }
 
-private fun collectMethodResolveVariants(referenceName: String, f: (RsMethodResolveProcessor) -> Unit): List<MethodCallee> {
-    val result = mutableListOf<MethodCallee>()
+data class FieldResolveVariant(
+    override val name: String,
+    override val element: RsElement,
+    override val selfTy: Ty,
+    override val derefCount: Int
+) : DotExprResolveVariant
+
+data class MethodResolveVariant(
+    override val name: String,
+    override val element: RsFunction,
+    override val selfTy: Ty,
+    override val derefCount: Int,
+    /**
+     * If the method defined in impl, this contains the impl. If the method inherited from
+     * trait definition, this contains the impl of the actual trait for the receiver type.
+     * Otherwise it's just a trait the method defined in
+     */
+    val source: TraitImplSource
+) : DotExprResolveVariant
+
+private fun <T : ScopeEntry> collectResolveVariants(referenceName: String, f: ((T) -> Boolean) -> Unit): List<T> {
+    val result = mutableListOf<T>()
     f { e ->
         if (e.name == referenceName) {
             result += e
@@ -113,19 +134,25 @@ private fun collectMethodResolveVariants(referenceName: String, f: (RsMethodReso
     return result
 }
 
-private fun filterMethodCompletionVariants(
+private fun filterMethodCompletionVariantsByTraitBounds(
     processor: RsResolveProcessor,
     lookup: ImplLookup,
     receiver: Ty
 ): RsResolveProcessor {
+    // Don't filter partially unknown types
+    if (receiver.containsTyOfClass(TyUnknown::class.java)) return processor
+
     val cache = mutableMapOf<RsImplItem, Boolean>()
     return fun(it: ScopeEntry): Boolean {
-        // 1. If not a method (actually a field) or a trait method - just process it
-        if (it !is MethodCallee || it.impl == null) return processor(it)
-        // 2. Filter methods by trait bounds (try to select all obligations for each impl)
-        // We're caching evaluation results here because we can often complete to a methods
+        // If not a method (actually a field) or a trait method - just process it
+        if (it !is MethodResolveVariant || it.source !is TraitImplSource.ExplicitImpl) return processor(it)
+        // Filter methods by trait bounds (try to select all obligations for each impl)
+        // We're caching evaluation results here because we can often complete methods
         // in the same impl and always have the same receiver type
-        if (cache.getOrPut(it.impl) { lookup.ctx.canEvaluateBounds(it.impl, receiver) }) return processor(it)
+        val canEvaluate = cache.getOrPut(it.source.value) {
+            lookup.ctx.canEvaluateBounds(it.source.value, receiver)
+        }
+        if (canEvaluate) return processor(it)
 
         return false
     }

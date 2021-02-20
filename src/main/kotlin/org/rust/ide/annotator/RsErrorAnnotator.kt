@@ -12,13 +12,31 @@ import com.intellij.lang.annotation.Annotator
 import com.intellij.openapi.util.Key
 import com.intellij.psi.PsiElement
 import com.intellij.psi.PsiFile
+import org.rust.cargo.project.workspace.CargoWorkspace.Edition
 import org.rust.cargo.project.workspace.PackageOrigin
+import org.rust.cargo.toolchain.RustChannel
+import org.rust.ide.annotator.fixes.AddFeatureAttributeFix
 import org.rust.ide.annotator.fixes.AddModuleFileFix
 import org.rust.ide.annotator.fixes.AddTurbofishFix
+import org.rust.ide.annotator.fixes.ImplementFromTraitFix
+import org.rust.ide.presentation.insertionSafeText
+import org.rust.ide.refactoring.RsNamesValidator.Companion.RESERVED_LIFETIME_NAMES
+import org.rust.ide.utils.findParentFnOrLambdaRetTy
+import org.rust.ide.utils.isFnRetTyResultAndMatchErrTy
+import org.rust.ide.utils.isResult
+import org.rust.lang.core.CRATE_IN_PATHS
+import org.rust.lang.core.CRATE_VISIBILITY_MODIFIER
+import org.rust.lang.core.CompilerFeature
+import org.rust.lang.core.FeatureState.ACCEPTED
+import org.rust.lang.core.FeatureState.ACTIVE
 import org.rust.lang.core.psi.*
 import org.rust.lang.core.psi.ext.*
+import org.rust.lang.core.resolve.ImplLookup
 import org.rust.lang.core.resolve.Namespace
+import org.rust.lang.core.resolve.knownItems
 import org.rust.lang.core.resolve.namespaces
+import org.rust.lang.core.stubs.index.RsFeatureIndex
+import org.rust.lang.core.types.TraitRef
 import org.rust.lang.core.types.inference
 import org.rust.lang.core.types.ty.*
 import org.rust.lang.core.types.type
@@ -50,8 +68,9 @@ class RsErrorAnnotator : Annotator, HighlightRangeExtension {
             override fun visitTraitItem(o: RsTraitItem) = checkDuplicates(holder, o)
             override fun visitTypeAlias(o: RsTypeAlias) = checkTypeAlias(holder, o)
             override fun visitTypeParameter(o: RsTypeParameter) = checkDuplicates(holder, o)
-            override fun visitLifetimeParameter(o: RsLifetimeParameter) = checkDuplicates(holder, o)
+            override fun visitLifetimeParameter(o: RsLifetimeParameter) = checkLifetimeParameter(holder, o)
             override fun visitVis(o: RsVis) = checkVis(holder, o)
+            override fun visitVisRestriction(o: RsVisRestriction) = checkVisRestriction(holder, o)
             override fun visitBinaryExpr(o: RsBinaryExpr) = checkBinary(holder, o)
             override fun visitCallExpr(o: RsCallExpr) = checkCallExpr(holder, o)
             override fun visitMethodCall(o: RsMethodCall) = checkMethodCallExpr(holder, o)
@@ -60,9 +79,62 @@ class RsErrorAnnotator : Annotator, HighlightRangeExtension {
             override fun visitDotExpr(o: RsDotExpr) = checkDotExpr(holder, o)
             override fun visitArrayType(o: RsArrayType) = collectDiagnostics(holder, o)
             override fun visitVariantDiscriminant(o: RsVariantDiscriminant) = collectDiagnostics(holder, o)
+            override fun visitPolybound(o: RsPolybound) = checkPolybound(holder, o)
+            override fun visitTryExpr(o: RsTryExpr) = checkTryExpr(holder, o)
+            override fun visitTraitRef(o: RsTraitRef) = checkTraitRef(holder, o)
         }
 
         element.accept(visitor)
+    }
+
+    private fun checkTryExpr(holder: AnnotationHolder, o: RsTryExpr) {
+        val items = o.knownItems
+        val lookup = ImplLookup(o.project, items)
+        val tryTrait = items.Try ?: return
+        val fromTrait = items.From ?: return
+
+        val tryExprTy = o.expr.type
+        if (tryExprTy is TyUnknown) return
+        val errorTy = findErrorType(tryExprTy, tryTrait, lookup)
+        if (errorTy == null) {
+            RsDiagnostic.TryTraitIsNotImplemented(o, tryExprTy).addToHolder(holder)
+            return
+        }
+
+        val returnTy = findParentFnOrLambdaRetTy(o)
+        val returnErrorTy = returnTy?.let { findErrorType(it, tryTrait, lookup) }
+        if (returnTy is TyUnknown) return
+        if (returnTy == null || returnErrorTy == null) {
+            RsDiagnostic.TryTraitIsNotImplementedForReturnType(o, returnTy).addToHolder(holder)
+            return
+        }
+
+        if (isFnRetTyResultAndMatchErrTy(o.expr, returnTy, errorTy)) return
+        if (returnErrorTy is TyUnknown) return
+        if ((isResult(returnTy, items) || checkTryTraitFeature(o))
+            && !lookup.canSelect(TraitRef(returnErrorTy, fromTrait.withSubst(errorTy)))) {
+            val annotation = holder.createErrorAnnotation(
+                o.q,
+                "the trait `std::convert::From<${errorTy.insertionSafeText}>` is not implemented for `${returnErrorTy.insertionSafeText}`"
+            )
+            RsDiagnostic.TraitFromTraitIsNotSatisfied(o, returnErrorTy, errorTy)
+            if (returnErrorTy is TyAdt && o.crateRoot == returnErrorTy.item.crateRoot) {
+                annotation.registerFix(ImplementFromTraitFix(o, errorTy, returnErrorTy))
+            }
+        }
+    }
+
+    private fun findErrorType(type: Ty, tryTrait: RsTraitItem, lookup: ImplLookup): Ty? {
+        val assocType = tryTrait.findAssociatedType("Error") ?: return null
+        return lookup.selectProjectionStrict(TraitRef(type, tryTrait.withSubst(type)),
+            assocType).ok()?.value
+    }
+
+    private fun checkTraitRef(holder: AnnotationHolder, o: RsTraitRef) {
+        val item = o.path.reference.resolve() as? RsItemElement ?: return
+        if (item !is RsTraitItem) {
+            RsDiagnostic.NotTraitError(o, item).addToHolder(holder)
+        }
     }
 
     private fun checkDotExpr(holder: AnnotationHolder, o: RsDotExpr) {
@@ -70,23 +142,25 @@ class RsErrorAnnotator : Annotator, HighlightRangeExtension {
         checkReferenceIsPublic(field, o, holder)
     }
 
+    private fun checkStaticUsageIsSafe(ref: RsReferenceElement, holder: AnnotationHolder) {
+        val element = ref.reference.resolve() as? RsConstant ?: return
+        val constantType = when {
+            element.kind == RsConstantKind.MUT_STATIC -> "mutable"
+            element.kind == RsConstantKind.STATIC && element.parent is RsForeignModItem -> "extern"
+            else -> return
+        }
+
+        val expr = ref.ancestorOrSelf<RsExpr>() ?: return
+        if (expr.isInUnsafeBlockOrFn()) return
+
+        RsDiagnostic.UnsafeError(expr, "Use of $constantType static is unsafe and requires unsafe function or block")
+            .addToHolder(holder)
+    }
+
     private fun checkReferenceIsPublic(ref: RsReferenceElement, o: PsiElement, holder: AnnotationHolder) {
         val element = ref.reference.resolve() as? RsVisible ?: return
-        if (element.isPublic) return
-        val elementMod = (if (element is RsMod) element.`super` else element.contextStrict()) ?: return
         val oMod = o.contextStrict<RsMod>() ?: return
-        // We have access to any item in any super module of `oMod`
-        // Note: `oMod.superMods` contains `oMod`
-        if (oMod.superMods.contains(elementMod)) return
-
-        val members = element.parent as? RsMembers
-        if (members != null) {
-            val parent = members.context ?: return
-            when (parent) {
-                is RsImplItem -> if (parent.traitRef != null) return
-                is RsTraitItem -> return
-            }
-        }
+        if (element.isVisibleFrom(oMod)) return
 
         val error = when {
             element is RsFieldDecl -> {
@@ -113,6 +187,7 @@ class RsErrorAnnotator : Annotator, HighlightRangeExtension {
 
     private fun checkMethodCallExpr(holder: AnnotationHolder, o: RsMethodCall) {
         val fn = o.reference.resolve() as? RsFunction ?: return
+
         if (fn.isUnsafe) {
             checkUnsafeCall(holder, o.parentDotExpr)
         }
@@ -121,6 +196,7 @@ class RsErrorAnnotator : Annotator, HighlightRangeExtension {
     private fun checkCallExpr(holder: AnnotationHolder, o: RsCallExpr) {
         val path = (o.expr as? RsPathExpr)?.path ?: return
         val fn = path.reference.resolve() as? RsFunction ?: return
+
         if (fn.isUnsafe) {
             checkUnsafeCall(holder, o)
         }
@@ -174,13 +250,14 @@ class RsErrorAnnotator : Annotator, HighlightRangeExtension {
     }
 
     private fun checkPath(holder: AnnotationHolder, path: RsPath) {
-        val child = path.path
-        if ((child == null || isValidSelfSuperPrefix(child)) && !isValidSelfSuperPrefix(path)) {
+        val qualifier = path.path
+        if ((qualifier == null || isValidSelfSuperPrefix(qualifier)) && !isValidSelfSuperPrefix(path)) {
             holder.createErrorAnnotation(path, "Invalid path: self and super are allowed only at the beginning")
             return
         }
 
-        if (path.self != null && path.parent !is RsPath && path.parent !is RsUseSpeck) {
+        val parent = path.parent
+        if (path.self != null && parent !is RsPath && parent !is RsUseSpeck && parent !is RsVisRestriction) {
             val function = path.ancestorStrict<RsFunction>()
             if (function == null) {
                 holder.createErrorAnnotation(path, "self value is not available in this context")
@@ -191,13 +268,85 @@ class RsErrorAnnotator : Annotator, HighlightRangeExtension {
                 RsDiagnostic.SelfInStaticMethodError(path, function).addToHolder(holder)
             }
         }
+
+        val crate = path.crate
+        val useSpeck = path.ancestorStrict<RsUseSpeck>()
+        val edition = path.containingCargoTarget?.edition
+
+        // `pub(crate)` should be annotated
+        if (crate != null && (qualifier != null || path.ancestorStrict<RsVisRestriction>() == null)) {
+            if (qualifier != null || useSpeck != null && useSpeck.qualifier != null) {
+                RsDiagnostic.UndeclaredTypeOrModule(crate).addToHolder(holder)
+            } else if (edition == Edition.EDITION_2015) {
+                checkFeature(holder, crate, CRATE_IN_PATHS, "`crate` in paths")
+            }
+        }
+
+        checkStaticUsageIsSafe(path, holder)
         checkReferenceIsPublic(path, path, holder)
+    }
+
+    private fun checkLifetimeParameter(holder: AnnotationHolder, lifetimeParameter: RsLifetimeParameter) {
+        checkReservedLifetimeName(holder, lifetimeParameter)
+        checkDuplicates(holder, lifetimeParameter)
+    }
+
+    private fun checkReservedLifetimeName(holder: AnnotationHolder, lifetimeParameter: RsLifetimeParameter) {
+        val lifetimeName = lifetimeParameter.quoteIdentifier.text
+        if (lifetimeName in RESERVED_LIFETIME_NAMES) {
+            RsDiagnostic.ReservedLifetimeNameError(lifetimeParameter, lifetimeName).addToHolder(holder)
+        }
     }
 
     private fun checkVis(holder: AnnotationHolder, vis: RsVis) {
         if (vis.parent is RsImplItem || vis.parent is RsForeignModItem || isInTraitImpl(vis) || isInEnumVariantField(vis)) {
             RsDiagnostic.UnnecessaryVisibilityQualifierError(vis).addToHolder(holder)
         }
+        checkCrateVisibilityModifier(holder, vis)
+    }
+
+    private fun checkCrateVisibilityModifier(holder: AnnotationHolder, vis: RsVis) {
+        val crateModifier = vis.crate ?: return
+        checkFeature(holder, crateModifier, CRATE_VISIBILITY_MODIFIER, "`crate` visibility modifier")
+    }
+
+    private fun checkVisRestriction(holder: AnnotationHolder, visRestriction: RsVisRestriction) {
+        val path = visRestriction.path
+        // pub(foo) or pub(super::bar)
+        if (visRestriction.`in` == null && (path.path != null || path.kind == PathKind.IDENTIFIER)) {
+            RsDiagnostic.IncorrectVisibilityRestriction(visRestriction).addToHolder(holder)
+        }
+    }
+
+    /**
+     * @return true only if feature is active
+     */
+    private fun checkFeature(
+        holder: AnnotationHolder,
+        element: PsiElement,
+        feature: CompilerFeature,
+        presentableFeatureName: String
+    ): Boolean {
+        val rsElement = element.ancestorOrSelf<RsElement>() ?: return false
+        val version = rsElement.cargoProject?.rustcInfo?.version ?: return false
+
+        if (feature.state == ACTIVE || feature.state == ACCEPTED && version.semver < feature.since) {
+            val diagnostic = if (version.channel != RustChannel.NIGHTLY) {
+                RsDiagnostic.ExperimentalFeature(element, presentableFeatureName)
+            } else {
+                val crateRoot = rsElement.crateRoot ?: return false
+                val attrs = RsFeatureIndex.getFeatureAttributes(element.project, feature.name)
+                if (attrs.none { it.crateRoot == crateRoot }) {
+                    val fix = AddFeatureAttributeFix(feature.name, crateRoot)
+                    RsDiagnostic.ExperimentalFeature(element, presentableFeatureName, fix)
+                } else {
+                    null
+                }
+            }
+            diagnostic?.addToHolder(holder)
+            return false
+        }
+        return true
     }
 
     private fun checkLabel(holder: AnnotationHolder, label: RsLabel) {
@@ -245,8 +394,8 @@ class RsErrorAnnotator : Annotator, HighlightRangeExtension {
         val traitName = trait.name ?: return
 
         fun mayDangleOnTypeOrLifetimeParameters(impl: RsImplItem): Boolean {
-            return impl.typeParameters.any() { it.queryAttributes.hasAtomAttribute("may_dangle") } ||
-                impl.lifetimeParameters.any() { it.queryAttributes.hasAtomAttribute("may_dangle") }
+            return impl.typeParameters.any { it.queryAttributes.hasAtomAttribute("may_dangle") } ||
+                impl.lifetimeParameters.any { it.queryAttributes.hasAtomAttribute("may_dangle") }
         }
 
         val attrRequiringUnsafeImpl = if (mayDangleOnTypeOrLifetimeParameters(impl)) "may_dangle" else null
@@ -357,6 +506,12 @@ class RsErrorAnnotator : Annotator, HighlightRangeExtension {
         RsDiagnostic.CrateNotFoundError(el, el.identifier.text).addToHolder(holder)
     }
 
+    private fun checkPolybound(holder: AnnotationHolder, o: RsPolybound) {
+        if (o.lparen != null && o.bound.lifetime != null) {
+            holder.createErrorAnnotation(o, "Parenthesized lifetime bounds are not supported")
+        }
+    }
+
     private fun isInTraitImpl(o: RsVis): Boolean {
         val impl = o.parent?.parent?.parent
         return impl is RsImplItem && impl.traitRef != null
@@ -407,7 +562,6 @@ private fun checkDuplicates(holder: AnnotationHolder, element: RsNameIdentifierO
     }
     message.addToHolder(holder)
 }
-
 
 private fun AnnotationSession.duplicatesByNamespace(owner: PsiElement, recursively: Boolean): Map<Namespace, Set<PsiElement>> {
     val fileMap = fileDuplicatesMap()
@@ -522,3 +676,14 @@ private fun checkTypesAreSized(holder: AnnotationHolder, fn: RsFunction) {
         RsDiagnostic.SizedTraitIsNotImplemented(typeReference, ty).addToHolder(holder)
     }
 }
+
+
+//TODO:change when 'try_trait' feature will be added to CompilerFeatures
+private fun checkTryTraitFeature(o: RsExpr): Boolean {
+    //if (!checkFeature(holder, o, %FEATURE NAME%, %FEATURE DESCRIPTION%)) return false
+    val version = o.cargoProject?.rustcInfo?.version ?: return false
+
+    return version.channel == RustChannel.NIGHTLY
+}
+
+

@@ -11,8 +11,8 @@ import com.intellij.codeInsight.template.postfix.templates.PostfixTemplateWithEx
 import com.intellij.openapi.editor.Editor
 import com.intellij.psi.PsiElement
 import com.intellij.psi.PsiFile
+import org.rust.ide.refactoring.introduceVariable.extractExpression
 import org.rust.lang.core.psi.RsExpr
-import org.rust.lang.refactoring.introduceVariable.extractExpression
 
 class RsPostfixTemplateProvider : PostfixTemplateProvider {
     private val templates: Set<PostfixTemplate> = setOf(
@@ -26,7 +26,8 @@ class RsPostfixTemplateProvider : PostfixTemplateProvider {
         ParenPostfixTemplate(),
         LambdaPostfixTemplate(this),
         NotPostfixTemplate(this),
-        LetPostfixTemplate(this)
+        LetPostfixTemplate(this),
+        IterPostfixTemplate(this)
     )
 
     override fun getTemplates(): Set<PostfixTemplate> = templates

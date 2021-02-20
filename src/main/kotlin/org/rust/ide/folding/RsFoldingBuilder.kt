@@ -8,7 +8,7 @@ package org.rust.ide.folding
 import com.intellij.application.options.CodeStyle
 import com.intellij.codeInsight.folding.CodeFoldingSettings
 import com.intellij.lang.ASTNode
-import com.intellij.lang.folding.FoldingBuilderEx
+import com.intellij.lang.folding.CustomFoldingBuilder
 import com.intellij.lang.folding.FoldingDescriptor
 import com.intellij.openapi.editor.Document
 import com.intellij.openapi.editor.FoldingGroup
@@ -18,26 +18,20 @@ import com.intellij.psi.PsiComment
 import com.intellij.psi.PsiDocumentManager
 import com.intellij.psi.PsiElement
 import com.intellij.psi.PsiWhiteSpace
-import com.intellij.psi.codeStyle.CodeStyleSettingsManager
 import com.intellij.psi.tree.TokenSet
 import com.intellij.psi.util.PsiTreeUtil
 import org.rust.lang.RsLanguage
-import org.rust.lang.core.leftLeaves
-import org.rust.lang.core.leftSiblings
 import org.rust.lang.core.parser.RustParserDefinition.Companion.BLOCK_COMMENT
 import org.rust.lang.core.parser.RustParserDefinition.Companion.INNER_EOL_DOC_COMMENT
 import org.rust.lang.core.parser.RustParserDefinition.Companion.OUTER_EOL_DOC_COMMENT
 import org.rust.lang.core.psi.*
 import org.rust.lang.core.psi.RsElementTypes.*
-import org.rust.lang.core.psi.ext.elementType
-import org.rust.lang.core.psi.ext.getNextNonCommentSibling
-import org.rust.lang.core.psi.ext.getPrevNonCommentSibling
-import org.rust.lang.core.rightSiblings
+import org.rust.lang.core.psi.ext.*
 import java.lang.Integer.max
 import java.util.*
 
-class RsFoldingBuilder : FoldingBuilderEx(), DumbAware {
-    override fun getPlaceholderText(node: ASTNode): String =
+class RsFoldingBuilder : CustomFoldingBuilder(), DumbAware {
+    override fun getLanguagePlaceholderText(node: ASTNode, range: TextRange): String =
         when {
             node.elementType == LBRACE -> " { "
             node.elementType == RBRACE -> " }"
@@ -45,13 +39,13 @@ class RsFoldingBuilder : FoldingBuilderEx(), DumbAware {
             node.psi is RsModDeclItem -> "/* mods */"
             node.psi is RsExternCrateItem -> "/* crates */"
             node.psi is PsiComment -> "/* ... */"
+            node.psi is RsValueParameterList -> "(...)"
             else -> "{...}"
         }
 
-    override fun buildFoldRegions(root: PsiElement, document: Document, quick: Boolean): Array<out FoldingDescriptor> {
-        if (root !is RsFile) return emptyArray()
+    override fun buildLanguageFoldRegions(descriptors: MutableList<FoldingDescriptor>, root: PsiElement, document: Document, quick: Boolean) {
+        if (root !is RsFile) return
 
-        val descriptors: MutableList<FoldingDescriptor> = ArrayList()
         val usingRanges: MutableList<TextRange> = ArrayList()
         val modsRanges: MutableList<TextRange> = ArrayList()
         val cratesRanges: MutableList<TextRange> = ArrayList()
@@ -59,8 +53,6 @@ class RsFoldingBuilder : FoldingBuilderEx(), DumbAware {
         val rightMargin = CodeStyle.getSettings(root).getRightMargin(RsLanguage)
         val visitor = FoldingVisitor(descriptors, usingRanges, modsRanges, cratesRanges, rightMargin)
         PsiTreeUtil.processElements(root) { it.accept(visitor); true }
-
-        return descriptors.toTypedArray()
     }
 
     private class FoldingVisitor(
@@ -91,6 +83,11 @@ class RsFoldingBuilder : FoldingBuilderEx(), DumbAware {
         override fun visitModItem(o: RsModItem) = foldBetween(o, o.lbrace, o.rbrace)
 
         override fun visitMacroArgument(o: RsMacroArgument) = foldBetween(o, o.lbrace, o.rbrace)
+
+        override fun visitValueParameterList(o: RsValueParameterList) {
+            if (o.valueParameterList.isEmpty()) return
+            foldBetween(o, o.firstChild, o.lastChild)
+        }
 
         override fun visitComment(comment: PsiComment) {
             when (comment.tokenType) {
@@ -185,7 +182,9 @@ class RsFoldingBuilder : FoldingBuilderEx(), DumbAware {
         }
     }
 
-    override fun isCollapsedByDefault(node: ASTNode): Boolean =
+    override fun isCustomFoldingRoot(node: ASTNode) = node.elementType == RsElementTypes.BLOCK
+
+    override fun isRegionCollapsedByDefault(node: ASTNode): Boolean =
         (RsCodeFoldingSettings.instance.collapsibleOneLineMethods && node.elementType in COLLAPSED_BY_DEFAULT)
             || (CodeFoldingSettings.getInstance().COLLAPSE_DOC_COMMENTS && node.elementType in DOC_COMMENTS)
 

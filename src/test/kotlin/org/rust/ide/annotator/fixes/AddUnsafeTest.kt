@@ -5,14 +5,14 @@
 
 package org.rust.ide.annotator.fixes
 
-import org.rust.ide.annotator.RsAnnotatorTestBase
+import org.rust.ide.annotator.RsAnnotationTestBase
 
-class AddUnsafeTest : RsAnnotatorTestBase() {
-    fun `test add unsafe to function`() = checkQuickFix("Add unsafe to function", """
+class AddUnsafeTest : RsAnnotationTestBase() {
+    fun `test add unsafe to function`() = checkFixByText("Add unsafe to function", """
         unsafe fn foo() {}
 
         fn main() {
-            foo()/*caret*/;
+            <error>foo()/*caret*/</error>;
         }
     """, """
         unsafe fn foo() {}
@@ -22,7 +22,7 @@ class AddUnsafeTest : RsAnnotatorTestBase() {
         }
     """)
 
-    fun `test add unsafe to function (method)`() = checkQuickFix("Add unsafe to function", """
+    fun `test add unsafe to function (method)`() = checkFixByText("Add unsafe to function", """
         struct S;
 
         impl S {
@@ -31,7 +31,7 @@ class AddUnsafeTest : RsAnnotatorTestBase() {
 
         fn main() {
             let s = S;
-            s.foo()/*caret*/;
+            <error>s.foo()/*caret*/</error>;
         }
     """, """
         struct S;
@@ -46,12 +46,26 @@ class AddUnsafeTest : RsAnnotatorTestBase() {
         }
     """)
 
-    fun `test add unsafe to block`() = checkQuickFix("Add unsafe to block", """
+    fun `test add unsafe to function (external linkage)`() = checkFixByText("Add unsafe to function", """
+        extern "C" { fn foo(); }
+
+        fn test() {
+            <error>foo()/*caret*/</error>;
+        }
+    """, """
+        extern "C" { fn foo(); }
+
+        unsafe fn test() {
+            foo();
+        }
+    """)
+
+    fun `test add unsafe to block`() = checkFixByText("Add unsafe to block", """
         unsafe fn foo() {}
 
         fn main() {
             {
-                foo()/*caret*/;
+                <error>foo()/*caret*/</error>;
             }
         }
     """, """
@@ -64,11 +78,11 @@ class AddUnsafeTest : RsAnnotatorTestBase() {
         }
     """)
 
-    fun `test wrap function with a unsafe block`() = checkQuickFix("Surround with unsafe block", """
+    fun `test wrap function with a unsafe block`() = checkFixByText("Surround with unsafe block", """
         unsafe fn foo() {}
 
         fn main() {
-            foo()/*caret*/;
+            <error>foo()/*caret*/</error>;
         }
     """, """
         unsafe fn foo() {}
@@ -78,11 +92,11 @@ class AddUnsafeTest : RsAnnotatorTestBase() {
         }
     """)
 
-    fun `test wrap function with a unsafe block 2`() = checkQuickFix("Surround with unsafe block", """
+    fun `test wrap function with a unsafe block 2`() = checkFixByText("Surround with unsafe block", """
         unsafe fn foo() {}
 
         fn main() {
-            foo()/*caret*/
+            <error>foo()/*caret*/</error>
         }
     """, """
         unsafe fn foo() {}
@@ -92,11 +106,11 @@ class AddUnsafeTest : RsAnnotatorTestBase() {
         }
     """)
 
-    fun `test wrap function with a unsafe block inline`() = checkQuickFix("Surround with unsafe block", """
+    fun `test wrap function with a unsafe block inline`() = checkFixByText("Surround with unsafe block", """
         unsafe fn pi() -> f64 { 3.14 }
 
         fn main() {
-            let s = pi()/*caret*/ * 10.0;
+            let s = <error>pi()/*caret*/</error> * 10.0;
         }
     """, """
         unsafe fn pi() -> f64 { 3.14 }
@@ -106,15 +120,29 @@ class AddUnsafeTest : RsAnnotatorTestBase() {
         }
     """)
 
-    fun `test wrap ptr deref with a unsafe block inline`() = checkQuickFix("Surround with unsafe block", """
+    fun `test wrap ptr deref with a unsafe block inline`() = checkFixByText("Surround with unsafe block", """
         fn main() {
             let char_ptr: *const char = 42 as *const _;
-            let val = *char_ptr/*caret*/;
+            let val = <error>*char_ptr/*caret*/</error>;
         }
     """, """
         fn main() {
             let char_ptr: *const char = 42 as *const _;
             let val = unsafe { *char_ptr };
+        }
+    """)
+
+    fun `test wrap function call with unsafe block (external linkage)`() = checkFixByText("Surround with unsafe block", """
+        extern "C" { fn foo(); }
+
+        fn test() {
+            <error>foo()/*caret*/</error>;
+        }
+    """, """
+        extern "C" { fn foo(); }
+
+        fn test() {
+            unsafe { foo(); }
         }
     """)
 }

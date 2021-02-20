@@ -10,10 +10,17 @@ import com.intellij.extapi.psi.StubBasedPsiElementBase
 import com.intellij.lang.ASTNode
 import com.intellij.openapi.util.Key
 import com.intellij.psi.PsiElement
+import com.intellij.psi.PsiFile
 import com.intellij.psi.stubs.IStubElementType
 import com.intellij.psi.stubs.StubElement
+import org.rust.cargo.project.model.CargoProject
 import org.rust.cargo.project.model.cargoProjects
 import org.rust.cargo.project.workspace.CargoWorkspace
+import org.rust.lang.core.psi.RsConstant
+import org.rust.lang.core.psi.RsEnumVariant
+import org.rust.lang.core.psi.RsFile
+import org.rust.lang.core.psi.rustFile
+import org.rust.openapiext.toPsiFile
 
 interface RsElement : PsiElement {
     /**
@@ -25,12 +32,21 @@ interface RsElement : PsiElement {
 }
 
 val CARGO_WORKSPACE = Key.create<CargoWorkspace>("CARGO_WORKSPACE")
+
+val RsElement.cargoProject: CargoProject?
+    get() = contextualFile.originalFile.cargoProject
+
 val RsElement.cargoWorkspace: CargoWorkspace?
     get() {
         val psiFile = contextualFile.originalFile
         psiFile.getUserData(CARGO_WORKSPACE)?.let { return it }
-        val vFile = psiFile.virtualFile ?: return null
-        return project.cargoProjects.findProjectForFile(vFile)?.workspace
+        return psiFile.cargoProject?.workspace
+    }
+
+private val PsiFile.cargoProject: CargoProject?
+    get() {
+        val vFile = virtualFile ?: return null
+        return project.cargoProjects.findProjectForFile(vFile)
     }
 
 
@@ -43,6 +59,30 @@ val RsElement.containingCargoTarget: CargoWorkspace.Target?
     }
 
 val RsElement.containingCargoPackage: CargoWorkspace.Package? get() = containingCargoTarget?.pkg
+
+/**
+ * It is possible to match value with constant-like element, e.g.
+ *      ```
+ *      enum Kind { A }
+ *      use Kind::A;
+ *      match kind { A => ... } // `A` is a constant-like element, not a pat binding
+ *      ```
+ *
+ * But there is no way to distinguish a pat binding from a constant-like element on syntax level,
+ * so we resolve an item `A` first, and then use [isConstantLike] to check whether the element is constant-like or not.
+ *
+ * Constant-like element can be: real constant, static variable, and enum variant without fields.
+ */
+val RsElement.isConstantLike: Boolean
+    get() = this is RsConstant || (this is RsEnumVariant && blockFields == null && tupleFields == null)
+
+fun RsElement.findDependencyCrateRoot(dependencyName: String): RsFile? {
+    return containingCargoPackage
+        ?.findDependency(dependencyName)
+        ?.crateRoot
+        ?.toPsiFile(project)
+        ?.rustFile
+}
 
 abstract class RsElementImpl(node: ASTNode) : ASTWrapperPsiElement(node), RsElement {
     override val containingMod: RsMod

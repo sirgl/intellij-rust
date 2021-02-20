@@ -9,22 +9,26 @@ import com.intellij.openapi.project.Project
 import com.intellij.psi.PsiElement
 import com.intellij.psi.PsiFileFactory
 import com.intellij.psi.PsiParserFacade
-import org.rust.ide.presentation.insertionSafeText
+import org.rust.ide.presentation.insertionSafeTextWithLifetimes
+import org.rust.ide.refactoring.extractFunction.RsExtractFunctionConfig
 import org.rust.lang.RsFileType
 import org.rust.lang.core.psi.ext.*
-import org.rust.lang.core.resolve.ref.RsReference
+import org.rust.lang.core.types.Substitution
+import org.rust.lang.core.types.emptySubstitution
+import org.rust.lang.core.types.infer.resolve
 import org.rust.lang.core.types.infer.substitute
-import org.rust.lang.core.types.ty.Substitution
-import org.rust.lang.core.types.ty.emptySubstitution
+import org.rust.lang.core.types.regions.ReUnknown
+import org.rust.lang.core.types.ty.Mutability
+import org.rust.lang.core.types.ty.Mutability.IMMUTABLE
+import org.rust.lang.core.types.ty.Mutability.MUTABLE
 import org.rust.lang.core.types.type
-import org.rust.lang.refactoring.extractFunction.RsExtractFunctionConfig
 
 class RsPsiFactory(private val project: Project) {
     fun createFile(text: CharSequence): RsFile =
         PsiFileFactory.getInstance(project)
             .createFileFromText("DUMMY.rs", RsFileType, text) as RsFile
 
-    fun createMacroDefinitionBody(text: String): RsMacroDefinitionBody? = createFromText(
+    fun createMacroBody(text: String): RsMacroBody? = createFromText(
         "macro_rules! m $text"
     )
 
@@ -110,9 +114,12 @@ class RsPsiFactory(private val project: Project) {
         createStatement("let ${"mut".iff(mutable)}$name${if (type != null) ": ${type.text}" else ""} = ${expr.text};") as RsLetDecl
 
 
-    fun createType(text: String): RsTypeReference =
-        createFromText("fn main() { let a : $text; }")
+    fun createType(text: CharSequence): RsTypeReference =
+        tryCreateType(text)
             ?: error("Failed to create type from text: `$text`")
+
+    fun tryCreateType(text: CharSequence): RsTypeReference? =
+        createFromText("fn main() { let a : $text; }")
 
     fun createMethodParam(text: String): PsiElement {
         val fnItem: RsFunction = createTraitMethodMember("fn foo($text);")
@@ -189,7 +196,7 @@ class RsPsiFactory(private val project: Project) {
         typeBounds: List<RsTypeParameter>
     ): RsWhereClause {
 
-        val lifetimes = lifetimeBounds
+        val lifetimeConstraints = lifetimeBounds
             .filter { it.lifetimeParamBounds != null }
             .mapNotNull { it.text }
 
@@ -197,7 +204,7 @@ class RsPsiFactory(private val project: Project) {
             .filter { it.typeParamBounds != null }
             .mapNotNull { it.text }
 
-        val whereClauseConstraints = (lifetimes + typeConstraints).joinToString(", ")
+        val whereClauseConstraints = (lifetimeConstraints + typeConstraints).joinToString(", ")
 
         val text = "where $whereClauseConstraints"
         return createFromText("fn main() $text {}")
@@ -213,9 +220,20 @@ class RsPsiFactory(private val project: Project) {
             ?: error("Failed to create type from text: `$text`")
     }
 
+    fun createTypeArgumentList(
+        params: Iterable<String>
+    ): RsTypeArgumentList {
+        val text = params.joinToString(prefix = "<", separator = ", ", postfix = ">")
+        return createFromText("type T = a$text") ?: error("Failed to create type argument from text: `$text`")
+    }
+
     fun createOuterAttr(text: String): RsOuterAttr =
         createFromText("#[$text] struct Dummy;")
             ?: error("Failed to create an outer attribute from text: `$text`")
+
+    fun createInnerAttr(text: String): RsInnerAttr =
+        createFromText("#![$text]")
+            ?: error("Failed to create an inner attribute from text: `$text`")
 
     fun createMatchBody(enumName: String?, variants: List<RsEnumVariant>): RsMatchBody {
         val matchBodyText = variants.joinToString(",\n", postfix = ",") { variant ->
@@ -245,6 +263,10 @@ class RsPsiFactory(private val project: Project) {
     fun createColon(): PsiElement =
         createFromText<RsConstant>("const C: () = ();")!!.colon!!
 
+    fun createIn(): PsiElement =
+        createFromText<RsConstant>("pub(in self) const C: () = ();")?.vis?.visRestriction?.`in` ?:
+            error("Failed to create `in` element")
+
     fun createNewline(): PsiElement = createWhitespace("\n")
 
     fun createWhitespace(ws: String): PsiElement =
@@ -270,6 +292,9 @@ class RsPsiFactory(private val project: Project) {
             ?: error("Failed to create parameter element")
     }
 
+    fun tryCreatePat(text: CharSequence): RsPat? =
+        createFromText("fn f($text: ()) {}")
+
     fun createPatBinding(name: String, mutable: Boolean = false, ref: Boolean = false): RsPatBinding =
         (createStatement("let ${"ref ".iff(ref)}${"mut ".iff(mutable)}$name = 10;") as RsLetDecl).pat
             ?.firstChild as RsPatBinding?
@@ -288,6 +313,26 @@ class RsPsiFactory(private val project: Project) {
         else -> createExpressionOfType("${expr.text}.$methodNameText()")
     }
 
+    fun createDerefExpr(expr: RsExpr, nOfDerefs: Int = 1): RsExpr =
+        if (nOfDerefs > 0)
+            when (expr) {
+                is RsBinaryExpr, is RsCastExpr -> createExpressionOfType("${"*".repeat(nOfDerefs)}(${expr.text})")
+                else -> createExpressionOfType("${"*".repeat(nOfDerefs)}${expr.text}")
+            }
+        else expr
+
+    fun createRefExpr(expr: RsExpr, muts: List<Mutability> = listOf(IMMUTABLE)): RsExpr =
+        if (!muts.none())
+            when (expr) {
+                is RsBinaryExpr, is RsCastExpr -> createExpressionOfType("${mutsToRefs(muts)}(${expr.text})")
+                else -> createExpressionOfType("${mutsToRefs(muts)}${expr.text}")
+            }
+        else expr
+
+    fun createVisRestriction(pathText: String): RsVisRestriction =
+        createFromText<RsFunction>("pub(in $pathText) fn foo() {}")?.vis?.visRestriction
+            ?: error("Failed to create vis restriction element")
+
     private inline fun <reified E : RsExpr> createExpressionOfType(text: String): E =
         createExpression(text) as? E
             ?: error("Failed to create ${E::class.simpleName} from `$text`")
@@ -300,10 +345,12 @@ private fun RsFunction.getSignatureText(subst: Substitution): String? {
     val name = name ?: return null
     val generics = typeParameterList?.text ?: ""
 
-    val allArguments = listOfNotNull(selfParameter?.text) + valueParameters.map {
+    val selfArgument = listOfNotNull(selfParameter?.substAndGetText(subst))
+    val valueArguments = valueParameters.map {
         // fix possible anon parameter
         "${it.pat?.text ?: "_"}: ${it.typeReference?.substAndGetText(subst) ?: "()"}"
     }
+    val allArguments = selfArgument + valueArguments
 
     val ret = retType?.typeReference?.substAndGetText(subst)?.let { "-> $it " } ?: ""
     val where = whereClause?.text ?: ""
@@ -313,4 +360,21 @@ private fun RsFunction.getSignatureText(subst: Substitution): String? {
 private fun String.iff(cond: Boolean) = if (cond) this + " " else " "
 
 private fun RsTypeReference.substAndGetText(subst: Substitution): String =
-    type.substitute(subst).insertionSafeText
+    type.substitute(subst).insertionSafeTextWithLifetimes
+
+private fun RsSelfParameter.substAndGetText(subst: Substitution): String =
+    buildString {
+        append(and?.text ?: "")
+        val region = lifetime.resolve().substitute(subst)
+        if (region != ReUnknown) append("$region ")
+        if (mutability == MUTABLE) append("mut ")
+        append(self.text)
+    }
+
+private fun mutsToRefs(mutability: List<Mutability>): String =
+    mutability.joinToString("", "", "") {
+        when (it) {
+            IMMUTABLE -> "&"
+            MUTABLE -> "&mut "
+        }
+    }

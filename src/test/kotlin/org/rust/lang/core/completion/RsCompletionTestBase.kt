@@ -9,9 +9,9 @@ import com.intellij.codeInsight.lookup.LookupElement
 import com.intellij.psi.PsiElement
 import com.intellij.psi.util.PsiTreeUtil
 import org.intellij.lang.annotations.Language
+import org.rust.RsTestBase
 import org.rust.fileTreeFromText
 import org.rust.hasCaretMarker
-import org.rust.lang.RsTestBase
 
 abstract class RsCompletionTestBase : RsTestBase() {
     // Prefer using `doSingleCompletion` instead
@@ -48,7 +48,7 @@ abstract class RsCompletionTestBase : RsTestBase() {
         checkByText(before, after) { executeSoloCompletion() }
     }
 
-    protected fun doSingleCompletionMultiflie(@Language("Rust") before: String, @Language("Rust") after: String) {
+    protected fun doSingleCompletionMultifile(@Language("Rust") before: String, @Language("Rust") after: String) {
         fileTreeFromText(before).createAndOpenFileWithCaretMarker()
         executeSoloCompletion()
         myFixture.checkResult(replaceCaretMarker(after.trimIndent()))

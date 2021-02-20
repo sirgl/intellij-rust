@@ -11,7 +11,6 @@ import com.intellij.lang.annotation.AnnotationHolder
 import com.intellij.lang.annotation.ExternalAnnotator
 import com.intellij.lang.annotation.HighlightSeverity
 import com.intellij.lang.annotation.ProblemGroup
-import com.intellij.openapi.application.Result
 import com.intellij.openapi.application.WriteAction
 import com.intellij.openapi.editor.Document
 import com.intellij.openapi.editor.Editor
@@ -30,7 +29,7 @@ import org.rust.cargo.project.settings.rustSettings
 import org.rust.cargo.project.settings.toolchain
 import org.rust.cargo.project.workspace.PackageOrigin
 import org.rust.cargo.toolchain.*
-import org.rust.ide.RsConstants
+import org.rust.lang.RsConstants
 import org.rust.lang.core.psi.RsFile
 import org.rust.lang.core.psi.ext.RsElement
 import org.rust.lang.core.psi.ext.cargoWorkspace
@@ -49,7 +48,7 @@ data class CargoCheckAnnotationInfo(
 class CargoCheckAnnotationResult(commandOutput: List<String>) {
     companion object {
         private val parser = JsonParser()
-        private val messageRegex = """\s*\{\s*"message".*""".toRegex()
+        private val messageRegex = """\s*\{.*"message".*""".toRegex()
     }
 
     val messages: List<CargoTopMessage> =
@@ -75,11 +74,12 @@ class RsCargoCheckAnnotator : ExternalAnnotator<CargoCheckAnnotationInfo, CargoC
 
     override fun doAnnotate(info: CargoCheckAnnotationInfo): CargoCheckAnnotationResult? =
         CachedValuesManager.getManager(info.module.project)
-            .getCachedValue(info.module, {
+            .getCachedValue(info.module) {
                 CachedValueProvider.Result.create(
                     checkProject(info),
-                    PsiModificationTracker.MODIFICATION_COUNT)
-            })
+                    PsiModificationTracker.MODIFICATION_COUNT
+                )
+            }
 
     override fun apply(file: PsiFile, annotationResult: CargoCheckAnnotationResult?, holder: AnnotationHolder) {
         if (annotationResult == null) return
@@ -112,21 +112,18 @@ class RsCargoCheckAnnotator : ExternalAnnotator<CargoCheckAnnotationInfo, CargoC
 // disposed objects
 private fun checkProject(info: CargoCheckAnnotationInfo): CargoCheckAnnotationResult? {
     // We have to save the file to disk to give cargo a chance to check fresh file content.
-    object : WriteAction<Unit>() {
-        override fun run(result: Result<Unit>) {
-            val fileDocumentManager = FileDocumentManager.getInstance()
-            val document = fileDocumentManager.getDocument(info.file)
-            if (document == null) {
-                fileDocumentManager.saveAllDocuments()
-            } else if (fileDocumentManager.isDocumentUnsaved(document)) {
-                fileDocumentManager.saveDocument(document)
-            }
+    WriteAction.computeAndWait<Unit, Throwable> {
+        val fileDocumentManager = FileDocumentManager.getInstance()
+        val document = fileDocumentManager.getDocument(info.file)
+        if (document == null) {
+            fileDocumentManager.saveAllDocuments()
+        } else if (fileDocumentManager.isDocumentUnsaved(document)) {
+            fileDocumentManager.saveDocument(document)
         }
-    }.execute()
-
+    }
 
     val output = try {
-        info.toolchain.cargoOrWrapper(info.projectPath).checkProject(info.module, info.projectPath)
+        info.toolchain.cargoOrWrapper(info.projectPath).checkProject(info.module.project, info.module, info.projectPath)
     } catch (e: ExecutionException) {
         return null
     }
@@ -217,26 +214,26 @@ private fun formatMessage(message: String): String {
 
     val (lastGroup, groups) =
         message.split("\n").fold(
-            Pair(null as Group?, ArrayList<Group>()),
-            { (group: Group?, acc: ArrayList<Group>), lineWithPrefix ->
-                val (isListItem, line) = if (lineWithPrefix.startsWith("-")) {
-                    true to lineWithPrefix.substring(2)
-                } else {
-                    false to lineWithPrefix
-                }
+            Pair(null as Group?, ArrayList<Group>())
+        ) { (group: Group?, acc: ArrayList<Group>), lineWithPrefix ->
+            val (isListItem, line) = if (lineWithPrefix.startsWith("-")) {
+                true to lineWithPrefix.substring(2)
+            } else {
+                false to lineWithPrefix
+            }
 
-                when {
-                    group == null -> Pair(Group(isListItem, arrayListOf(line)), acc)
-                    group.isList == isListItem -> {
-                        group.lines.add(line)
-                        Pair(group, acc)
-                    }
-                    else -> {
-                        acc.add(group)
-                        Pair(Group(isListItem, arrayListOf(line)), acc)
-                    }
+            when {
+                group == null -> Pair(Group(isListItem, arrayListOf(line)), acc)
+                group.isList == isListItem -> {
+                    group.lines.add(line)
+                    Pair(group, acc)
                 }
-            })
+                else -> {
+                    acc.add(group)
+                    Pair(Group(isListItem, arrayListOf(line)), acc)
+                }
+            }
+        }
     if (lastGroup != null && lastGroup.lines.isNotEmpty()) groups.add(lastGroup)
 
     return groups.joinToString {

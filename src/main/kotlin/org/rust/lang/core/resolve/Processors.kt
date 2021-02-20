@@ -8,14 +8,11 @@ package org.rust.lang.core.resolve
 import com.intellij.codeInsight.lookup.LookupElement
 import org.rust.lang.core.completion.createLookupElement
 import org.rust.lang.core.psi.RsFunction
-import org.rust.lang.core.psi.RsImplItem
-import org.rust.lang.core.psi.ext.RsElement
-import org.rust.lang.core.psi.ext.RsNamedElement
-import org.rust.lang.core.psi.ext.isTest
-import org.rust.lang.core.resolve.ref.MethodCallee
+import org.rust.lang.core.psi.ext.*
+import org.rust.lang.core.resolve.ref.MethodResolveVariant
 import org.rust.lang.core.types.BoundElement
-import org.rust.lang.core.types.ty.Substitution
-import org.rust.lang.core.types.ty.emptySubstitution
+import org.rust.lang.core.types.Substitution
+import org.rust.lang.core.types.emptySubstitution
 
 /**
  * ScopeEntry is some PsiElement visible in some code scope.
@@ -35,10 +32,19 @@ interface ScopeEntry {
  * to the resolve processor
  */
 enum class ScopeEvent : ScopeEntry {
-    // Communicate to the resolve processor that we are about
-    // to process wildecard imports. This is basically a hack
-    // to make winapi 0.2 work in a reasonable amount of time.
-    STAR_IMPORTS;
+    /**
+     * Communicate to the resolve processor that we are about to process wildecard imports.
+     * This is basically a hack to make winapi 0.2 work in a reasonable amount of time.
+     */
+    STAR_IMPORTS,
+    /**
+     * Communicate to the resolve processor that we are about to process dependency crates
+     * (regardless of `extern crate` declarations). It's used to support new paths (since
+     * Rust 1.30 and Rust 2018 edition), where non-global path can start with a crate name,
+     * but local modules have higher priority (if there are a crate and module with the same
+     * names, the module wins)
+     */
+    IMPLICIT_CRATES;
 
     override val element: RsElement? get() = null
 }
@@ -48,7 +54,7 @@ enum class ScopeEvent : ScopeEntry {
  * return `false` to continue search
  */
 typealias RsResolveProcessor = (ScopeEntry) -> Boolean
-typealias RsMethodResolveProcessor = (MethodCallee) -> Boolean
+typealias RsMethodResolveProcessor = (MethodResolveVariant) -> Boolean
 
 fun collectPathResolveVariants(
     referenceName: String,
@@ -56,7 +62,9 @@ fun collectPathResolveVariants(
 ): List<BoundElement<RsElement>> {
     val result = mutableListOf<BoundElement<RsElement>>()
     f { e ->
-        if (e == ScopeEvent.STAR_IMPORTS && result.isNotEmpty()) return@f true
+        if ((e == ScopeEvent.STAR_IMPORTS || e == ScopeEvent.IMPLICIT_CRATES) && result.isNotEmpty()) {
+            return@f true
+        }
 
         if (e.name == referenceName) {
             val element = e.element ?: return@f false
@@ -74,6 +82,18 @@ fun collectResolveVariants(referenceName: String, f: (RsResolveProcessor) -> Uni
 
         if (e.name == referenceName) {
             result += e.element ?: return@f false
+        }
+        false
+    }
+    return result
+}
+
+fun pickFirstResolveVariant(referenceName: String, f: (RsResolveProcessor) -> Unit): RsElement? {
+    var result: RsElement? = null
+    f { e ->
+        if (e.name == referenceName) {
+            result = e.element
+            return@f result != null
         }
         false
     }
@@ -101,7 +121,7 @@ data class AssocItemScopeEntry(
     override val name: String,
     override val element: RsElement,
     override val subst: Substitution = emptySubstitution,
-    val impl: RsImplItem?
+    val source: TraitImplSource
 ) : ScopeEntry
 
 private class LazyScopeEntry(
@@ -118,7 +138,7 @@ operator fun RsResolveProcessor.invoke(name: String, e: RsElement, subst: Substi
     this(SimpleScopeEntry(name, e, subst))
 
 fun RsResolveProcessor.lazy(name: String, e: () -> RsElement?): Boolean =
-    this(LazyScopeEntry(name, lazy(e)))
+    this(LazyScopeEntry(name, lazy(LazyThreadSafetyMode.NONE, e)))
 
 operator fun RsResolveProcessor.invoke(e: RsNamedElement): Boolean {
     val name = e.name ?: return false
@@ -149,4 +169,17 @@ fun processAllWithSubst(
         if (processor(BoundElement(e, subst))) return true
     }
     return false
+}
+
+fun filterCompletionVariantsByVisibility(processor: RsResolveProcessor, mod: RsMod): RsResolveProcessor {
+    return fun(it: ScopeEntry): Boolean {
+        val element = it.element
+        if (element is RsVisible && !element.isVisibleFrom(mod)) return false
+
+        val isHidden = element is RsOuterAttributeOwner && element.queryAttributes.isDocHidden &&
+            element.containingMod != mod
+        if (isHidden) return false
+
+        return processor(it)
+    }
 }

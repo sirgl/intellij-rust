@@ -5,7 +5,7 @@
 
 package org.rust.ide.folding
 
-import org.rust.lang.RsTestBase
+import org.rust.RsTestBase
 
 class RsFoldingBuilderTest : RsTestBase() {
     override val dataPath = "org/rust/ide/folding/fixtures"
@@ -30,6 +30,12 @@ class RsFoldingBuilderTest : RsTestBase() {
     fun `test uses`() = doTest()
     fun `test mods`() = doTest()
     fun `test crates`() = doTest()
+    fun `test parameter list`() = doTest()
+    fun `test custom region`() = doTest()
+    fun `test custom region attached to function`() = doTest()
+    fun `test custom region in struct`() = doTest()
+    fun `test custom region in match expr`() = doTest()
+    fun `test custom region in trait`() = doTest()
 
     private fun doTest() {
         myFixture.testFolding("$testDataPath/$fileName")

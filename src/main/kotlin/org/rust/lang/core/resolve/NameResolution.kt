@@ -7,30 +7,51 @@
 
 package org.rust.lang.core.resolve
 
+import com.intellij.openapi.diagnostic.Logger
+import com.intellij.openapi.progress.ProgressManager
 import com.intellij.openapi.project.Project
-import com.intellij.openapi.util.Key
 import com.intellij.openapi.util.io.FileUtil
 import com.intellij.psi.PsiElement
-import com.intellij.psi.util.*
+import com.intellij.psi.StubBasedPsiElement
+import com.intellij.psi.stubs.StubElement
+import com.intellij.psi.util.CachedValueProvider
+import com.intellij.psi.util.CachedValuesManager
+import com.intellij.psi.util.PsiTreeUtil
+import com.intellij.psi.util.PsiUtilCore
 import org.rust.cargo.project.workspace.CargoWorkspace
 import org.rust.cargo.project.workspace.PackageOrigin
+import org.rust.cargo.util.AutoInjectedCrates.CORE
+import org.rust.cargo.util.AutoInjectedCrates.STD
+import org.rust.lang.RsConstants
+import org.rust.lang.core.macros.MACRO_CRATE_IDENTIFIER_PREFIX
+import org.rust.lang.core.macros.RsExpandedElement
+import org.rust.lang.core.macros.expandedFrom
+import org.rust.lang.core.macros.findMacroCallExpandedFrom
 import org.rust.lang.core.psi.*
+import org.rust.lang.core.psi.RsFile.Attributes.*
 import org.rust.lang.core.psi.ext.*
-import org.rust.lang.core.resolve.NameResolutionTestmarks.missingMacroExport
 import org.rust.lang.core.resolve.NameResolutionTestmarks.missingMacroUse
+import org.rust.lang.core.resolve.NameResolutionTestmarks.otherVersionOfSameCrate
 import org.rust.lang.core.resolve.NameResolutionTestmarks.selfInGroup
 import org.rust.lang.core.resolve.indexes.RsLangItemIndex
-import org.rust.lang.core.resolve.ref.MethodCallee
+import org.rust.lang.core.resolve.indexes.RsMacroIndex
+import org.rust.lang.core.resolve.ref.DotExprResolveVariant
+import org.rust.lang.core.resolve.ref.FieldResolveVariant
+import org.rust.lang.core.resolve.ref.MethodResolveVariant
 import org.rust.lang.core.resolve.ref.deepResolve
 import org.rust.lang.core.stubs.index.RsNamedElementIndex
+import org.rust.lang.core.types.Substitution
+import org.rust.lang.core.types.emptySubstitution
 import org.rust.lang.core.types.infer.foldTyTypeParameterWith
 import org.rust.lang.core.types.infer.substitute
+import org.rust.lang.core.types.toTypeSubst
 import org.rust.lang.core.types.ty.*
 import org.rust.lang.core.types.type
 import org.rust.openapiext.Testmark
 import org.rust.openapiext.hitOnFalse
 import org.rust.openapiext.isUnitTestMode
 import org.rust.openapiext.toPsiFile
+import org.rust.stdext.buildList
 
 // IntelliJ Rust name resolution algorithm.
 // Collapse all methods (`ctrl shift -`) to get a bird's eye view.
@@ -68,19 +89,29 @@ import org.rust.openapiext.toPsiFile
 //     a code fragment in a temporary file and attaching it to some existing file. See the usages of
 //     [RsCodeFragmentFactory]
 
+private val LOG = Logger.getInstance("org.rust.lang.core.resolve.NameResolution")
+
+fun processDotExprResolveVariants(
+    lookup: ImplLookup,
+    receiverType: Ty,
+    processor: (DotExprResolveVariant) -> Boolean
+): Boolean {
+    if (processFieldExprResolveVariants(lookup, receiverType, processor)) return true
+    if (processMethodDeclarationsWithDeref(lookup, receiverType) { processor(it) }) return true
+
+    return false
+}
+
 fun processFieldExprResolveVariants(
     lookup: ImplLookup,
     receiverType: Ty,
-    isCompletion: Boolean,
-    processor: RsResolveProcessor
+    processor: (FieldResolveVariant) -> Boolean
 ): Boolean {
-    for (ty in lookup.coercionSequence(receiverType)) {
+    for ((i, ty) in lookup.coercionSequence(receiverType).withIndex()) {
         if (ty !is TyAdt || ty.item !is RsStructItem) continue
-        if (processFieldDeclarations(ty.item, processor)) return true
+        if (processFieldDeclarations(ty.item) { processor(FieldResolveVariant(it.name, it.element!!, ty, i)) }) return true
     }
-    if (isCompletion && processMethodDeclarationsWithDeref(lookup, receiverType, processor)) {
-        return true
-    }
+
     return false
 }
 
@@ -118,8 +149,9 @@ fun processModDeclResolveVariants(modDecl: RsModDeclItem, processor: RsResolvePr
 
     val explicitPath = modDecl.pathAttribute
     if (explicitPath != null) {
-        val vFile = dir.virtualFile.findFileByRelativePath(FileUtil.toSystemIndependentName(explicitPath)) ?: return false
-        val mod = vFile.toPsiFile(modDecl.project)?.rustMod ?: return false
+        val vFile = dir.virtualFile.findFileByRelativePath(FileUtil.toSystemIndependentName(explicitPath))
+            ?: return false
+        val mod = vFile.toPsiFile(modDecl.project)?.rustFile ?: return false
 
         val name = modDecl.name ?: return false
         return processor(name, mod)
@@ -127,8 +159,8 @@ fun processModDeclResolveVariants(modDecl: RsModDeclItem, processor: RsResolvePr
     if (modDecl.isLocal) return false
 
     for (file in dir.files) {
-        if (file == modDecl.contextualFile.originalFile || file.name == RsMod.MOD_RS) continue
-        val mod = file.rustMod ?: continue
+        if (file == modDecl.contextualFile.originalFile || file.name == RsConstants.MOD_RS_FILE) continue
+        val mod = file.rustFile ?: continue
         val fileName = FileUtil.getNameWithoutExtension(file.name)
         val modDeclName = modDecl.referenceName
         // Handle case-insensitive filesystem (windows)
@@ -141,25 +173,29 @@ fun processModDeclResolveVariants(modDecl: RsModDeclItem, processor: RsResolvePr
     }
 
     for (d in dir.subdirectories) {
-        val mod = d.findFile(RsMod.MOD_RS)?.rustMod ?: continue
+        val mod = d.findFile(RsConstants.MOD_RS_FILE)?.rustFile ?: continue
         if (processor(d.name, mod)) return true
     }
 
     return false
 }
 
-fun processExternCrateResolveVariants(crate: RsExternCrateItem, isCompletion: Boolean, processor: RsResolveProcessor): Boolean {
-    val pkg = crate.containingCargoPackage ?: return false
+fun processExternCrateResolveVariants(element: RsElement, isCompletion: Boolean, processor: RsResolveProcessor): Boolean {
+    val target = element.containingCargoTarget ?: return false
+    val pkg = target.pkg
 
     val visitedDeps = mutableSetOf<String>()
     fun processPackage(pkg: CargoWorkspace.Package): Boolean {
         if (isCompletion && pkg.origin != PackageOrigin.DEPENDENCY) return false
         val libTarget = pkg.libTarget ?: return false
+        // When crate depends on another version of the same crate
+        // we shouldn't add current package into resolve/completion results
+        if (otherVersionOfSameCrate.hitOnFalse(libTarget == target)) return false
 
         if (pkg.origin == PackageOrigin.STDLIB && pkg.name in visitedDeps) return false
         visitedDeps += pkg.name
         return processor.lazy(libTarget.normName) {
-            libTarget.crateRoot?.toPsiFile(crate.project)?.rustMod
+            libTarget.crateRoot?.toPsiFile(element.project)?.rustFile
         }
     }
 
@@ -181,14 +217,15 @@ fun processExternCrateResolveVariants(crate: RsExternCrateItem, isCompletion: Bo
     return false
 }
 
-private val RsPath.qualifier: RsPath? get() {
-    path?.let { return it }
-    var ctx = context
-    while (ctx is RsPath) {
-        ctx = ctx.context
+private val RsPath.qualifier: RsPath?
+    get() {
+        path?.let { return it }
+        var ctx = context
+        while (ctx is RsPath) {
+            ctx = ctx.context
+        }
+        return (ctx as? RsUseSpeck)?.qualifier
     }
-    return (ctx as? RsUseSpeck)?.qualifier
-}
 
 fun processPathResolveVariants(lookup: ImplLookup, path: RsPath, isCompletion: Boolean, processor: RsResolveProcessor): Boolean {
 
@@ -197,7 +234,16 @@ fun processPathResolveVariants(lookup: ImplLookup, path: RsPath, isCompletion: B
     val parent = path.context
     val ns = when (parent) {
         is RsPath, is RsTypeElement, is RsTraitRef, is RsStructLiteral -> TYPES
-        is RsUseSpeck -> if (parent.isStarImport) TYPES else TYPES_N_VALUES
+        is RsUseSpeck -> when {
+            // use foo::bar::{self, baz};
+            //     ~~~~~~~~
+            // use foo::bar::*;
+            //     ~~~~~~~~
+            parent.useGroup != null || parent.isStarImport -> TYPES
+            // use foo::bar;
+            //     ~~~~~~~~
+            else -> TYPES_N_VALUES_N_MACROS
+        }
         is RsPathExpr -> if (isCompletion) TYPES_N_VALUES else VALUES
         else -> TYPES_N_VALUES
     }
@@ -205,7 +251,7 @@ fun processPathResolveVariants(lookup: ImplLookup, path: RsPath, isCompletion: B
     if (qualifier != null) {
         val primitiveType = TyPrimitive.fromPath(qualifier)
         if (primitiveType != null) {
-            val selfSubst = mapOf(TyTypeParameter.self() to primitiveType)
+            val selfSubst = mapOf(TyTypeParameter.self() to primitiveType).toTypeSubst()
             if (processAssociatedItemsWithSelfSubst(lookup, primitiveType, ns, selfSubst, processor)) return true
         }
 
@@ -213,12 +259,20 @@ fun processPathResolveVariants(lookup: ImplLookup, path: RsPath, isCompletion: B
         if (base is RsMod) {
             val s = base.`super`
             if (s != null && processor("super", s)) return true
+
+            val containingMod = path.containingMod
+            if (Namespace.Macros in ns && base is RsFile && base.isCrateRoot &&
+                containingMod is RsFile && containingMod.isCrateRoot &&
+                containingMod.hasUseExternMacrosFeature) {
+                if (processAll(exportedMacros(base), processor)) return true
+            }
         }
         if (parent is RsUseSpeck && path.path == null) {
             selfInGroup.hit()
             if (processor("self", base)) return true
         }
-        if (processItemOrEnumVariantDeclarations(base, ns, processor, isSuperChain(qualifier))) return true
+        val isSuperChain = isSuperChain(qualifier)
+        if (processItemOrEnumVariantDeclarations(base, ns, processor, withPrivateImports = isSuperChain)) return true
         if (base is RsTypeDeclarationElement && parent !is RsUseSpeck) {
             // Foo::<Bar>::baz
             val selfTy = if (base is RsImplItem && qualifier.hasCself) {
@@ -230,13 +284,13 @@ fun processPathResolveVariants(lookup: ImplLookup, path: RsPath, isCompletion: B
                     // it means that all possible `TyInfer` has already substituted (with `_`)
                     subst
                 } else {
-                    subst.mapValues { (_, v) -> v.foldTyTypeParameterWith { TyInfer.TyVar(it) } }
+                    subst.mapTypeValues { (_, v) -> v.foldTyTypeParameterWith { TyInfer.TyVar(it) } }
                 }
                 base.declaredType.substitute(realSubst)
             }
             val isSelf = qualifier.hasColonColon || !qualifier.hasCself
             val selfSubst = if (isSelf && base !is RsTraitItem) {
-                mapOf(TyTypeParameter.self() to selfTy)
+                mapOf(TyTypeParameter.self() to selfTy).toTypeSubst()
             } else {
                 emptySubstitution
             }
@@ -248,14 +302,15 @@ fun processPathResolveVariants(lookup: ImplLookup, path: RsPath, isCompletion: B
     if (typeQual != null) {
         // <T as Trait>::Item
         val trait = typeQual.traitRef?.resolveToBoundTrait ?: return false
-        val selfSubst = mapOf(TyTypeParameter.self() to typeQual.typeReference.type)
+        val selfSubst = mapOf(TyTypeParameter.self() to typeQual.typeReference.type).toTypeSubst()
         val subst = trait.subst.substituteInValues(selfSubst) + selfSubst
         if (processAllWithSubst(trait.element.members?.typeAliasList.orEmpty(), subst, processor)) return true
+        return false
     }
 
     if (isCompletion) {
         // Complete possible associated types in a case like `Trait</*caret*/>`
-        val possibleTypeArgs = parent.parent?.parent
+        val possibleTypeArgs = parent?.parent?.parent
         if (possibleTypeArgs is RsTypeArgumentList) {
             val trait = (possibleTypeArgs.parent as? RsPath)?.reference?.resolve() as? RsTraitItem
             if (trait != null && processAssocTypeVariants(trait, processor)) return true
@@ -264,31 +319,63 @@ fun processPathResolveVariants(lookup: ImplLookup, path: RsPath, isCompletion: B
 
     val containingMod = path.containingMod
     val crateRoot = path.crateRoot
-    if (!path.hasColonColon) {
+    val isAbsolute = path.hasColonColon
+    if (!isAbsolute) {
+        run { // hacks around $crate macro metavar. See `expandDollarCrateVar` function docs
+            val referenceName = path.referenceName
+            if (referenceName.startsWith(MACRO_CRATE_IDENTIFIER_PREFIX) && path.findMacroCallExpandedFrom() != null) {
+                val crate = referenceName.removePrefix(MACRO_CRATE_IDENTIFIER_PREFIX)
+                val result = if (crate == "self") {
+                    processor.lazy(referenceName) { path.crateRoot }
+                } else {
+                    processExternCrateResolveVariants(path, false) {
+                        if (it.name == crate) processor.lazy(referenceName) { it.element } else false
+                    }
+                }
+                if (result) return true
+            }
+        }
         if (Namespace.Types in ns) {
             if (processor("self", containingMod)) return true
             val superMod = containingMod.`super`
             if (superMod != null && processor("super", superMod)) return true
+            if (crateRoot != null && processor("crate", crateRoot)) return true
         }
     }
 
     // Paths in use items are implicitly global.
-    if (path.hasColonColon || path.contextStrict<RsUseItem>() != null) {
+    if (isAbsolute || path.contextStrict<RsUseItem>() != null) {
         if (crateRoot != null) {
-            if (processItemOrEnumVariantDeclarations(crateRoot, ns, processor)) return true
+            if (processItemOrEnumVariantDeclarations(crateRoot, ns, processor, withPrivateImports = true)) return true
         }
-        return false
+    } else {
+        if (processNestedScopesUpwards(path, processor, ns)) return true
     }
 
-    return processNestedScopesUpwards(path, processor, ns)
+    if (!isAbsolute && Namespace.Types in ns && path.kind == PathKind.IDENTIFIER) {
+        if (processor(ScopeEvent.IMPLICIT_CRATES)) return true
+
+        val attributes = (crateRoot as? RsFile)?.attributes
+        val implicitExternCrate = when (attributes) {
+            NONE -> "std"
+            NO_STD -> "core"
+            else -> null
+        }
+        // We shouldn't process implicit extern crate here
+        // because we add it in `ItemResolutionKt.processItemDeclarations`
+        if (path.referenceName != implicitExternCrate) {
+            if (processExternCrateResolveVariants(path, isCompletion, processor)) return true
+        }
+    }
+
+    return false
 }
 
 fun processPatBindingResolveVariants(binding: RsPatBinding, isCompletion: Boolean, processor: RsResolveProcessor): Boolean {
     return processNestedScopesUpwards(binding, { entry ->
         processor.lazy(entry.name) {
-            val element = entry.element
-            val isConstant = element is RsConstant
-                || (element is RsEnumVariant && element.blockFields == null && element.tupleFields == null)
+            val element = entry.element ?: return@lazy null
+            val isConstant = element.isConstantLike
             val isPathOrDestructable = when (element) {
                 is RsMod, is RsEnumItem, is RsEnumVariant, is RsStructItem -> true
                 else -> false
@@ -338,6 +425,7 @@ fun processLocalVariables(place: RsElement, processor: (RsPatBinding) -> Unit) {
  * Resolves an absolute path.
  */
 fun resolveStringPath(path: String, workspace: CargoWorkspace, project: Project): Pair<RsNamedElement, CargoWorkspace.Package>? {
+    check(!path.startsWith("::"))
     val parts = path.split("::", limit = 2)
     if (parts.size != 2) return null
     val pkg = workspace.findPackage(parts[0]) ?: run {
@@ -359,30 +447,16 @@ fun resolveStringPath(path: String, workspace: CargoWorkspace, project: Project)
 }
 
 fun processMacroReferenceVariants(ref: RsMacroReference, processor: RsResolveProcessor): Boolean {
-    val definition = ref.ancestorStrict<RsMacroDefinitionCase>() ?: return false
+    val definition = ref.ancestorStrict<RsMacroCase>() ?: return false
     val simple = definition.macroPattern.descendantsOfType<RsMacroBinding>()
         .toList()
 
     return simple.any { processor(it) }
 }
 
-fun processMetaItemResolveVariants(element: RsMetaItem, processor: RsResolveProcessor): Boolean {
-    if (element.ancestorStrict<RsMetaItem>()?.referenceName != "derive") return false
-    val traitName = element.referenceName
+fun processDeriveTraitResolveVariants(element: RsMetaItem, traitName: String, processor: RsResolveProcessor): Boolean {
     val traits = RsNamedElementIndex.findDerivableTraits(element.project, traitName)
     return processAll(traits, processor)
-}
-
-fun processMacroCallVariants(invocation: PsiElement, processor: RsResolveProcessor): Boolean =
-    walkUp(invocation, { false }, false) { _, scope -> processMacroDeclarations(scope, processor) }
-
-fun processMacroDeclarations(scope: RsElement, processor: RsResolveProcessor): Boolean {
-    when (scope) {
-        is RsFile -> if (processItemMacroDeclarations(scope, processor, scope.isCrateRoot)) return true
-        is RsMod -> if (processItemMacroDeclarations(scope, processor)) return true
-        is RsBlock -> if (processItemMacroDeclarations(scope, processor)) return true
-    }
-    return false
 }
 
 fun processBinaryOpVariants(element: RsBinaryOp, operator: OverloadableBinaryOperator,
@@ -409,68 +483,303 @@ fun processAssocTypeVariants(trait: RsTraitItem, processor: RsResolveProcessor):
     return false
 }
 
-private val EXPORTED_MACROS_KEY: Key<CachedValue<List<RsMacroDefinition>>> = Key.create("EXPORTED_MACROS_KEY")
-private val ALL_MACROS_KEY: Key<CachedValue<List<RsMacroDefinition>>> = Key.create("ALL_MACROS_KEY")
+fun processMacroCallVariants(element: PsiElement, processor: RsResolveProcessor): Boolean {
 
-private fun visibleMacroDefinitions(scope: RsItemsOwner, needExport: Boolean): List<RsMacroDefinition> =
-    CachedValuesManager.getCachedValue(scope, if (needExport) EXPORTED_MACROS_KEY else ALL_MACROS_KEY) {
-        val macros = visibleMacroDefinitionsInternal(scope, needExport)
-        CachedValueProvider.Result.create(macros, PsiModificationTracker.MODIFICATION_COUNT)
+    if (MacroResolver.processMacrosInLexicalOrderUpward(element) { processor(it) }) return true
+
+    val prelude = (element.contextOrSelf<RsElement>())?.findDependencyCrateRoot(STD) ?: return false
+    return processAll(exportedMacros(prelude), processor)
+}
+
+private class MacroResolver private constructor(
+    context: PsiElement
+) {
+    private val hasExternMacrosFeature = lazy {
+        (context.ancestorOrSelf<RsElement>()?.crateRoot as? RsFile)?.hasUseExternMacrosFeature ?: false
     }
 
-private fun visibleMacroDefinitionsInternal(scope: RsItemsOwner, needExport: Boolean): List<RsMacroDefinition> {
-    val result = mutableListOf<RsMacroDefinition>()
-    loop@ for (item in scope.itemsAndMacros) {
+    private val exportingMacrosCrates = mutableMapOf<String, RsFile>()
+    private val useItems = mutableListOf<RsUseItem>()
+
+    private fun collectMacrosInScopeDownward(scope: RsItemsOwner): List<RsMacro> {
+        val visibleMacros = mutableListOf<RsMacro>()
+
+        for (item in scope.itemsAndMacros) {
+            processMacrosAtScopeEntry(item) {
+                visibleMacros.add(it)
+            }
+        }
+
+        visibleMacros.reverse() // Reverse list to recover lexical order of macro declarations
+
+        processRemainedExportedMacros { visibleMacros.add(it) }
+
+        return visibleMacros
+    }
+
+    private fun processMacrosInLexicalOrderUpward(startElement: PsiElement, processor: (RsMacro) -> Boolean): Boolean {
+        if (processScopesInLexicalOrderUpward(startElement) {
+            if (it is RsElement) {
+                processMacrosAtScopeEntry(it, processor)
+            } else {
+                false
+            }
+        }) {
+            return true
+        }
+
+        return processRemainedExportedMacros(processor)
+    }
+
+    /**
+     * In short, it processes left siblings, then left siblings of the parent (without parent itself) and so on
+     * until root (file), then it goes up to module declaration of the file (`mod foo;`) and processes its
+     * siblings, and so on until crate root
+     */
+    private fun processScopesInLexicalOrderUpward(
+        startElement: PsiElement,
+        processor: (PsiElement) -> Boolean
+    ): Boolean {
+        val stub = (startElement as? StubBasedPsiElement<*>)?.stub
+        return if (stub != null) {
+            stubBasedProcessScopesInLexicalOrderUpward(stub, processor)
+        } else {
+            psiBasedProcessScopesInLexicalOrderUpward(startElement, processor)
+        }
+    }
+
+    private tailrec fun psiBasedProcessScopesInLexicalOrderUpward(
+        element: PsiElement,
+        processor: (PsiElement) -> Boolean
+    ): Boolean {
+        if (processAll(element.leftSiblings, processor)) return true
+
+        // ```
+        // //- main.rs
+        // macro_rules! foo { ... }
+        // bar! { foo!(); } // expands to `foo!();` macro call
+        // ```
+        // In such case, if we expanded `bar!` macro call to macro call `foo!` and then resolving
+        // `foo` macro, both `parent` and `context` of `foo!` macro call are "main.rs" file.
+        // But we want to process macro definition before `bar!` macro call, so we have to use
+        // a macro call as a "parent"
+        val parent = (element as? RsExpandedElement)?.expandedFrom ?: element.context ?: return false
+        return when (parent) {
+            is RsFile -> processScopesInLexicalOrderUpward(parent.declaration ?: return false, processor)
+            else -> psiBasedProcessScopesInLexicalOrderUpward(parent, processor)
+        }
+    }
+
+    private tailrec fun stubBasedProcessScopesInLexicalOrderUpward(
+        element: StubElement<*>,
+        processor: (PsiElement) -> Boolean
+    ): Boolean {
+        val parentStub = element.parentStub ?: return false
+        val siblings = parentStub.childrenStubs
+        val index = siblings.indexOf(element)
+        check(index != -1) { "Can't find stub index" }
+        val leftSiblings = siblings.subList(0, index)
+        for (it in leftSiblings) {
+            if (processor(it.psi)) return true
+        }
+        // See comment in psiBasedProcessScopesInLexicalOrderUpward
+        val parentPsi = (element.psi as? RsExpandedElement)?.expandedFrom ?: parentStub.psi
+        return when {
+            parentPsi is RsFile -> processScopesInLexicalOrderUpward(parentPsi.declaration ?: return false, processor)
+            // Optimization. Let this function be tailrec if go up by stub parent
+            parentPsi != parentStub.psi -> processScopesInLexicalOrderUpward(parentPsi, processor)
+            else -> stubBasedProcessScopesInLexicalOrderUpward(parentStub, processor)
+        }
+    }
+
+    private fun processMacrosAtScopeEntry(
+        item: RsElement,
+        processor: (RsMacro) -> Boolean
+    ): Boolean {
         when (item) {
-            is RsMacroDefinition ->
-                if (!needExport || missingMacroExport.hitOnFalse(item.hasMacroExport)) result += item
-
-            is RsExternCrateItem ->
-                if (needExport) {
-                    val reexport = item.findOuterAttr("macro_reexport")
-                        ?.metaItem?.metaItemArgs?.metaItemList
-                        ?.mapNotNull { it.referenceName } ?: continue@loop
-                    val mod = item.reference.resolve() as? RsFile ?: continue@loop
-                    val internalMacros = visibleMacroDefinitions(mod, needExport = true)
-                    result.addAll(internalMacros.filter { reexport.contains(it.name) })
-                } else if (missingMacroUse.hitOnFalse(item.hasMacroUse)) {
-                    val mod = item.reference.resolve() as? RsFile ?: continue@loop
-                    result.addAll(visibleMacroDefinitions(mod, needExport = true))
+            is RsMacro -> if (processor(item)) return true
+            is RsModItem ->
+                if (missingMacroUse.hitOnFalse(item.hasMacroUse)) {
+                    if (processAll(visibleMacros(item), processor)) return true
                 }
-
             is RsModDeclItem ->
-                if (needExport || missingMacroUse.hitOnFalse(item.hasMacroUse)) {
-                    val mod = item.reference.resolve() ?: continue@loop
-                    if (mod is RsMod) {
-                        result.addAll(visibleMacroDefinitions(mod, needExport))
+                if (missingMacroUse.hitOnFalse(item.hasMacroUse)) {
+                    val mod = item.reference.resolve() as? RsMod ?: return false
+                    if (processAll(visibleMacros(mod), processor)) return true
+                }
+            is RsExternCrateItem -> {
+                val mod = item.reference.resolve() as? RsFile ?: return false
+                if (missingMacroUse.hitOnFalse(item.hasMacroUse)) {
+                    // If extern crate has `#[macro_use]` attribute
+                    // we can use all exported macros from the corresponding crate
+                    if (processAll(exportedMacros(mod), processor)) return true
+                } else {
+                    // otherwise we can use only reexported macros
+                    val reexportedMacros = reexportedMacros(item)
+                    if (reexportedMacros != null) {
+                        // via #[macro_reexport] attribute (old way)
+                        if (processAll(reexportedMacros, processor)) return true
+                    } else {
+                        // or from `use` items (new way).
+                        // It requires `#![feature(use_extern_macros)]`
+                        if (hasExternMacrosFeature.value) {
+                            exportingMacrosCrates[item.nameWithAlias] = mod
+                        }
                     }
                 }
 
-            is RsModItem ->
-                if (needExport || missingMacroUse.hitOnFalse(item.hasMacroUse)) {
-                    result.addAll(visibleMacroDefinitions(item, needExport))
-                }
+
+            }
+            is RsUseItem -> useItems += item
+        }
+
+        return false
+    }
+
+    private fun processRemainedExportedMacros(processor: (RsMacro) -> Boolean): Boolean {
+        // Really we are not very accurate here because we use extern crate from same parent
+        // Ideally we should take into account all extern crate from super mods
+        // but it's ok for now
+        if (exportingMacrosCrates.isNotEmpty()) {
+            for (useItem in useItems) {
+                if (processAll(collectExportedMacros(useItem, exportingMacrosCrates), processor)) return true
+            }
+        }
+
+        return false
+    }
+
+    companion object {
+        fun processMacrosInLexicalOrderUpward(startElement: PsiElement, processor: (RsMacro) -> Boolean): Boolean =
+            MacroResolver(startElement).processMacrosInLexicalOrderUpward(startElement, processor)
+
+        private fun visibleMacros(scope: RsItemsOwner): List<RsMacro> =
+            CachedValuesManager.getCachedValue(scope) {
+                val macros = MacroResolver(scope).collectMacrosInScopeDownward(scope)
+                CachedValueProvider.Result.create(macros, scope.project.rustStructureModificationTracker)
+            }
+
+        private fun <T> processAll(elements: Collection<T>, processor: (T) -> Boolean): Boolean =
+            processAll(elements.asSequence(), processor)
+
+        private fun <T> processAll(elements: Sequence<T>, processor: (T) -> Boolean): Boolean {
+            for (e in elements) {
+                if (processor(e)) return true
+            }
+            return false
         }
     }
-    return result
 }
 
-private fun processItemMacroDeclarations(
-    scope: RsItemsOwner,
-    processor: RsResolveProcessor,
-    addStdCrate: Boolean = false
-): Boolean {
-    val macros = visibleMacroDefinitions(scope, needExport = false)
-    if (processAll(macros, processor)) return true
-
-    if (addStdCrate) {
-        val prelude = scope.containingCargoPackage?.findDependency("std")
-            ?.crateRoot
-            ?.toPsiFile(scope.project)
-            ?.rustMod
-        if (prelude is RsFile && processAll(visibleMacroDefinitions(prelude, needExport = true), processor)) return true
+private fun exportedMacros(scope: RsFile): List<RsMacro> {
+    if (!scope.isCrateRoot) {
+        LOG.warn("`${scope.virtualFile}` should be crate root")
+        return emptyList()
     }
-    return false
+    return CachedValuesManager.getCachedValue(scope) {
+        val macros = exportedMacrosInternal(scope)
+        CachedValueProvider.Result.create(macros, scope.project.rustStructureModificationTracker)
+    }
+}
+
+private fun exportedMacrosInternal(scope: RsFile): List<RsMacro> {
+    val allExportedMacros = RsMacroIndex.allExportedMacros(scope.project)
+    return buildList {
+        addAll(allExportedMacros[scope].orEmpty())
+
+        val exportingMacrosCrates = mutableMapOf<String, RsMod>()
+
+        val externCrates = scope.stubChildrenOfType<RsExternCrateItem>()
+        for (item in externCrates) {
+            val reexportedMacros = reexportedMacros(item)
+            if (reexportedMacros != null) {
+                addAll(reexportedMacros)
+            } else {
+                exportingMacrosCrates[item.nameWithAlias] = item.reference.resolve() as? RsMod ?: continue
+            }
+        }
+
+        val implicitStdlibCrate = implicitStdlibCrate(scope)
+        if (implicitStdlibCrate != null) {
+            exportingMacrosCrates[implicitStdlibCrate.name] = implicitStdlibCrate.crateRoot
+        }
+
+        if (exportingMacrosCrates.isNotEmpty()) {
+            for (useItem in scope.stubChildrenOfType<RsUseItem>()) {
+                // only public use items can reexport macros
+                if (!useItem.isPublic) continue
+                addAll(collectExportedMacros(useItem, exportingMacrosCrates))
+            }
+        }
+    }
+}
+
+/**
+ * Returns list of re-exported macros via `[macro_reexport]` attribute from given extern crate
+ * or null if extern crate item doesn't have `[macro_reexport]` attribute
+ */
+private fun reexportedMacros(item: RsExternCrateItem): List<RsMacro>? {
+    val macroReexportAttr = item.findOuterAttr("macro_reexport") ?: return null
+    val exportingMacroNames = macroReexportAttr
+        .metaItem
+        .metaItemArgs
+        ?.metaItemList
+        ?.mapNotNull { it.name }
+        ?: return emptyList()
+    val mod = item.reference.resolve() as? RsFile ?: return emptyList()
+    val nameToExportedMacro = exportedMacros(mod).mapNotNull {
+        val name = it.name ?: return@mapNotNull null
+        name to it
+    }.toMap()
+    return exportingMacroNames.mapNotNull { nameToExportedMacro[it] }
+}
+
+private fun collectExportedMacros(
+    useItem: RsUseItem,
+    exportingMacrosCrates: Map<String, RsMod>
+): List<RsMacro> {
+    return buildList {
+        val root = useItem.useSpeck ?: return@buildList
+
+        fun forEachRootUseSpeck(useSpeck: RsUseSpeck, consumer: (RsUseSpeck, RsPath) -> Unit) {
+            val path = useSpeck.path
+            if (path != null) {
+                consumer(useSpeck, path)
+            } else {
+                useSpeck.useGroup?.useSpeckList?.forEach { forEachRootUseSpeck(it, consumer) }
+            }
+        }
+
+        forEachRootUseSpeck(root) { speck, path ->
+            val basePath = path.basePath()
+            // If path name is not in `exportingMacrosCrates` then
+            // it can't be resolved to extern crate mod exporting macros.
+            // Note, it significantly improves performance of macro resolution
+            val expectedMod = exportingMacrosCrates[basePath.referenceName] ?: return@forEachRootUseSpeck
+
+            val mod = basePath.reference.resolve() as? RsFile ?: return@forEachRootUseSpeck
+            // Don't try to resolve leaf items if `mod` can't bring macros at all
+            if (mod == expectedMod) {
+                val crateExportedMacros = lazy { exportedMacros(mod) }
+
+                speck.forEachLeafSpeck { leafSpeck ->
+                    // We should use multi resolve here
+                    // because single use speck can import module and macro at same time
+                    val resolvedItems = leafSpeck.path?.reference?.multiResolve().orEmpty()
+
+                    if (leafSpeck.isStarImport) {
+                        if (mod == resolvedItems.singleOrNull()) {
+                            addAll(crateExportedMacros.value)
+                        }
+                    } else {
+                        val exportedMacros = resolvedItems.filterIsInstance<RsMacro>()
+                            .filter { it in crateExportedMacros.value }
+                        addAll(exportedMacros)
+                    }
+                }
+            }
+        }
+    }
 }
 
 private fun processFieldDeclarations(struct: RsFieldsOwner, processor: RsResolveProcessor): Boolean {
@@ -484,8 +793,8 @@ private fun processFieldDeclarations(struct: RsFieldsOwner, processor: RsResolve
 
 private fun processMethodDeclarationsWithDeref(lookup: ImplLookup, receiver: Ty, processor: RsMethodResolveProcessor): Boolean {
     return lookup.coercionSequence(receiver).withIndex().any { (i, ty) ->
-        val methodProcessor: (AssocItemScopeEntry) -> Boolean = { (name, element, _, impl) ->
-            element is RsFunction && !element.isAssocFn && processor(MethodCallee(name, element, impl, ty, i))
+        val methodProcessor: (AssocItemScopeEntry) -> Boolean = { (name, element, _, source) ->
+            element is RsFunction && !element.isAssocFn && processor(MethodResolveVariant(name, element, ty, i, source))
         }
         processAssociatedItems(lookup, ty, VALUES, methodProcessor)
     }
@@ -499,22 +808,22 @@ private fun processAssociatedItems(
 ): Boolean {
     val traitBounds = (type as? TyTypeParameter)?.getTraitBoundsTransitively()
     val visitedInherent = mutableSetOf<String>()
-    fun processTraitOrImpl(traitOrImpl: RsTraitOrImpl, inherent: Boolean): Boolean {
+    fun processTraitOrImpl(traitOrImpl: TraitImplSource, inherent: Boolean): Boolean {
         fun inherentProcessor(entry: RsNamedElement): Boolean {
             val name = entry.name ?: return false
             if (inherent) visitedInherent.add(name)
             if (!inherent && name in visitedInherent) return false
 
-            val subst = if (traitBounds != null && traitOrImpl is RsTraitItem) {
+            val subst = if (traitBounds != null && traitOrImpl is TraitImplSource.TraitBound) {
                 // Retrieve trait subst for associated type like
                 // trait SliceIndex<T> { type Output; }
                 // fn get<I: : SliceIndex<S>>(index: I) -> I::Output
                 // Resulting subst will contains mapping T => S
-                traitBounds.find { it.element == traitOrImpl }?.subst ?: emptySubstitution
+                traitBounds.filter { it.element == traitOrImpl.value }.map { it.subst }
             } else {
-                emptySubstitution
+                listOf(emptySubstitution)
             }
-            return processor(AssocItemScopeEntry(name, entry, subst, traitOrImpl as? RsImplItem))
+            return subst.any { processor(AssocItemScopeEntry(name, entry, it, traitOrImpl)) }
         }
 
         /**
@@ -522,12 +831,12 @@ private fun processAssociatedItems(
          * which are not implemented.
          */
         fun processMembersWithDefaults(accessor: (RsMembers) -> List<RsNamedElement>): Boolean {
-            val directlyImplemented = traitOrImpl.members?.let { accessor(it) }.orEmpty()
+            val directlyImplemented = traitOrImpl.value.members?.let { accessor(it) }.orEmpty()
             if (directlyImplemented.any { inherentProcessor(it) }) return true
 
-            if (traitOrImpl is RsImplItem) {
+            if (traitOrImpl is TraitImplSource.ExplicitImpl) {
                 val direct = directlyImplemented.map { it.name }.toSet()
-                val membersFromTrait = traitOrImpl.implementedTrait?.element?.members ?: return false
+                val membersFromTrait = traitOrImpl.value.implementedTrait?.element?.members ?: return false
                 for (member in accessor(membersFromTrait)) {
                     if (member.name !in direct && inherentProcessor(member)) return true
                 }
@@ -537,16 +846,15 @@ private fun processAssociatedItems(
         }
 
         if (Namespace.Values in ns) {
-            if (processMembersWithDefaults({ it.functionList })) return true
-            if (processMembersWithDefaults({ it.constantList })) return true
+            if (processMembersWithDefaults { it.expandedMembers.functionsAndConstants }) return true
         }
         if (Namespace.Types in ns) {
-            if (processMembersWithDefaults({ it.typeAliasList })) return true
+            if (processMembersWithDefaults { it.expandedMembers.types }) return true
         }
         return false
     }
 
-    val (traits, inherent) = lookup.findImplsAndTraits(type).partition { (it as? RsImplItem)?.traitRef != null }
+    val (inherent, traits) = lookup.findImplsAndTraits(type).partition { it is TraitImplSource.ExplicitImpl && it.value.traitRef == null }
     if (inherent.any { processTraitOrImpl(it, true) }) return true
     if (traits.any { processTraitOrImpl(it, false) }) return true
     return false
@@ -559,13 +867,17 @@ private fun processAssociatedItemsWithSelfSubst(
     selfSubst: Substitution,
     processor: RsResolveProcessor
 ): Boolean {
-    val assocItemsProcessor: RsResolveProcessor = {
-        processor(it.name, it.element!!, it.subst + selfSubst)
+    return processAssociatedItems(lookup, type, ns) {
+        processor(it.copy(subst = it.subst + selfSubst))
     }
-    return processAssociatedItems(lookup, type, ns, assocItemsProcessor)
 }
 
-private fun processLexicalDeclarations(scope: RsElement, cameFrom: PsiElement, ns: Set<Namespace>, processor: RsResolveProcessor): Boolean {
+private fun processLexicalDeclarations(
+    scope: RsElement,
+    cameFrom: PsiElement,
+    ns: Set<Namespace>,
+    processor: RsResolveProcessor
+): Boolean {
     check(cameFrom.context == scope)
 
     fun processPattern(pattern: RsPat, processor: RsResolveProcessor): Boolean {
@@ -683,9 +995,13 @@ private fun processLexicalDeclarations(scope: RsElement, cameFrom: PsiElement, n
     return false
 }
 
-private fun processNestedScopesUpwards(scopeStart: RsElement, processor: RsResolveProcessor, ns: Set<Namespace>): Boolean {
+fun processNestedScopesUpwards(
+    scopeStart: RsElement,
+    processor: RsResolveProcessor,
+    ns: Set<Namespace>
+): Boolean {
     val prevScope = mutableSetOf<String>()
-    walkUp(scopeStart, { it is RsMod }) { cameFrom, scope ->
+    if (walkUp(scopeStart, { it is RsMod }) { cameFrom, scope ->
         val currScope = mutableListOf<String>()
         val shadowingProcessor = { e: ScopeEntry ->
             e.name !in prevScope && run {
@@ -696,15 +1012,45 @@ private fun processNestedScopesUpwards(scopeStart: RsElement, processor: RsResol
         if (processLexicalDeclarations(scope, cameFrom, ns, shadowingProcessor)) return@walkUp true
         prevScope.addAll(currScope)
         false
+    }) {
+        return true
     }
 
-    val prelude = scopeStart.containingCargoPackage?.findDependency("std")?.crateRoot
-        ?.findFileByRelativePath("../prelude/v1.rs")
-        ?.toPsiFile(scopeStart.project)
-        ?.rustMod
-    if (prelude != null && processItemDeclarations(prelude, ns, { v -> v.name !in prevScope && processor(v) }, false)) return true
+    val prelude = findPrelude(scopeStart)
+    val preludeProcessor: (ScopeEntry) -> Boolean = { v -> v.name !in prevScope && processor(v) }
+    if (prelude != null && processItemDeclarations(prelude, ns, preludeProcessor, withPrivateImports = false)) return true
 
     return false
+}
+
+private fun findPrelude(element: RsElement): RsFile? {
+    val crateRoot = element.crateRoot as? RsFile ?: return null
+    val cargoPackage = crateRoot.containingCargoPackage
+    val isStdlib = cargoPackage?.origin == PackageOrigin.STDLIB
+    val packageName = cargoPackage?.normName
+
+    // `std` and `core` crates explicitly add their prelude
+    val stdlibCrateRoot = if (isStdlib && (packageName == STD || packageName == CORE)) {
+        crateRoot
+    } else {
+        implicitStdlibCrate(crateRoot)?.crateRoot
+    }
+
+    return stdlibCrateRoot
+        ?.virtualFile
+        ?.findFileByRelativePath("../prelude/v1.rs")
+        ?.toPsiFile(element.project)
+        ?.rustFile
+}
+
+// Implicit extern crate from stdlib
+private fun implicitStdlibCrate(scope: RsFile): ImplicitStdlibCrate? {
+    val (name, crateRoot) = when (scope.attributes) {
+        NO_CORE -> return null
+        NO_STD -> CORE to scope.findDependencyCrateRoot(CORE)
+        NONE -> STD to scope.findDependencyCrateRoot(STD)
+    }
+    return if (crateRoot == null) null else ImplicitStdlibCrate(name, crateRoot)
 }
 
 // There's already similar functions in TreeUtils, should use it
@@ -717,6 +1063,7 @@ private fun walkUp(
     var cameFrom = start
     var scope = start.context as RsElement?
     while (scope != null) {
+        ProgressManager.checkCanceled()
         if (processor(cameFrom, scope)) return true
         if (stopAfter(scope)) break
         cameFrom = scope
@@ -741,4 +1088,7 @@ object NameResolutionTestmarks {
     val missingMacroExport = Testmark("missingMacroExport")
     val missingMacroUse = Testmark("missingMacroUse")
     val selfInGroup = Testmark("selfInGroup")
+    val otherVersionOfSameCrate = Testmark("otherVersionOfSameCrate")
 }
+
+private data class ImplicitStdlibCrate(val name: String, val crateRoot: RsFile)
