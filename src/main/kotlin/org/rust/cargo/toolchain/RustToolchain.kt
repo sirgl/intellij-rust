@@ -5,13 +5,14 @@
 
 package org.rust.cargo.toolchain
 
-import com.google.common.annotations.VisibleForTesting
 import com.intellij.openapi.util.SystemInfo
 import com.intellij.openapi.util.io.FileUtil
 import com.intellij.util.text.SemVer
 import org.rust.cargo.runconfig.runExecutable
 import org.rust.openapiext.GeneralCommandLine
 import org.rust.openapiext.checkIsBackgroundThread
+import org.rust.openapiext.isUnitTestMode
+import org.rust.openapiext.withWorkDirectory
 import java.io.File
 import java.nio.file.Files
 import java.nio.file.Path
@@ -22,25 +23,34 @@ data class RustToolchain(val location: Path) {
         hasExecutable(CARGO) && hasExecutable(RUSTC)
 
     fun queryVersions(): VersionInfo {
-        checkIsBackgroundThread()
-        return queryVersionsSync()
+        if (!isUnitTestMode) {
+            checkIsBackgroundThread()
+        }
+        return VersionInfo(scrapeRustcVersion(pathToExecutable(RUSTC)))
     }
 
-    @VisibleForTesting
-    fun queryVersionsSync(): VersionInfo = VersionInfo(scrapeRustcVersion(pathToExecutable(RUSTC)))
+    fun getSysroot(projectDirectory: Path): String? {
+        val timeoutMs = 10000
+        val output = GeneralCommandLine(pathToExecutable(RUSTC))
+            .withCharset(Charsets.UTF_8)
+            .withWorkDirectory(projectDirectory)
+            .withParameters("--print", "sysroot")
+            .exec(timeoutMs)
+        return if (output.isSuccess) output.stdout.trim() else null
+    }
 
     fun rawCargo(): Cargo =
-        Cargo(pathToExecutable(CARGO), pathToExecutable(RUSTC))
+        Cargo(pathToExecutable(CARGO), pathToExecutable(RUSTC), pathToExecutable(RUSTFMT))
 
     fun cargoOrWrapper(cargoProjectDirectory: Path?): Cargo {
         val hasXargoToml = cargoProjectDirectory?.resolve(XARGO_TOML)?.let { Files.isRegularFile(it) } == true
         val cargoWrapper = if (hasXargoToml && hasExecutable(XARGO)) XARGO else CARGO
-        return Cargo(pathToExecutable(cargoWrapper), pathToExecutable(RUSTC))
+        return Cargo(pathToExecutable(cargoWrapper), pathToExecutable(RUSTC), pathToExecutable(RUSTFMT))
     }
 
     fun rustup(cargoProjectDirectory: Path): Rustup? =
         if (isRustupAvailable)
-            Rustup(pathToExecutable(RUSTUP), pathToExecutable(RUSTC), cargoProjectDirectory)
+            Rustup(this, pathToExecutable(RUSTUP), cargoProjectDirectory)
         else
             null
 
@@ -57,18 +67,19 @@ data class RustToolchain(val location: Path) {
         Files.isExecutable(pathToExecutable(exec))
 
     data class VersionInfo(
-        val rustc: RustcVersion
+        val rustc: RustcVersion?
     )
 
     companion object {
-        private val RUSTC = "rustc"
-        private val CARGO = "cargo"
-        private val RUSTUP = "rustup"
-        private val XARGO = "xargo"
+        private const val RUSTC = "rustc"
+        private const val RUSTFMT = "rustfmt"
+        private const val CARGO = "cargo"
+        private const val RUSTUP = "rustup"
+        private const val XARGO = "xargo"
 
-        val CARGO_TOML = "Cargo.toml"
-        val CARGO_LOCK = "Cargo.lock"
-        val XARGO_TOML = "Xargo.toml"
+        const val CARGO_TOML = "Cargo.toml"
+        const val CARGO_LOCK = "Cargo.lock"
+        const val XARGO_TOML = "Xargo.toml"
 
         fun suggest(): RustToolchain? = Suggestions.all().mapNotNull {
             val candidate = RustToolchain(it.toPath().toAbsolutePath())
@@ -78,19 +89,16 @@ data class RustToolchain(val location: Path) {
 }
 
 data class RustcVersion(
-    val semver: SemVer?,
-    val nightlyCommitHash: String?
-) {
-    companion object {
-        val UNKNOWN = RustcVersion(null, null)
-    }
-}
+    val semver: SemVer,
+    val host: String,
+    val channel: RustChannel
+)
 
-private fun scrapeRustcVersion(rustc: Path): RustcVersion {
+private fun scrapeRustcVersion(rustc: Path): RustcVersion? {
     val lines = GeneralCommandLine(rustc)
         .withParameters("--version", "--verbose")
         .runExecutable()
-        ?: return RustcVersion.UNKNOWN
+        ?: return null
 
     // We want to parse following
     //
@@ -102,17 +110,24 @@ private fun scrapeRustcVersion(rustc: Path): RustcVersion {
     //  host: x86_64-unknown-linux-gnu
     //  release: 1.8.0-beta.1
     //  ```
-    val commitHashRe = "commit-hash: (.*)".toRegex()
     val releaseRe = """release: (\d+\.\d+\.\d+)(.*)""".toRegex()
+    val hostRe = "host: (.*)".toRegex()
     val find = { re: Regex -> lines.mapNotNull { re.matchEntire(it) }.firstOrNull() }
 
-    val commitHash = find(commitHashRe)?.let { it.groups[1]!!.value }
-    val releaseMatch = find(releaseRe) ?: return RustcVersion.UNKNOWN
-    val versionText = releaseMatch.groups[1]?.value ?: return RustcVersion.UNKNOWN
+    val releaseMatch = find(releaseRe) ?: return null
+    val hostText = find(hostRe)?.groups?.get(1)?.value ?: return null
+    val versionText = releaseMatch.groups[1]?.value ?: return null
 
-    val semVer = SemVer.parseFromText(versionText) ?: return RustcVersion.UNKNOWN
-    val isStable = releaseMatch.groups[2]?.value.isNullOrEmpty()
-    return RustcVersion(semVer, if (isStable) null else commitHash)
+    val semVer = SemVer.parseFromText(versionText) ?: return null
+
+    val releaseSuffix = releaseMatch.groups[2]?.value.orEmpty()
+    val channel = when {
+        releaseSuffix.isEmpty() -> RustChannel.STABLE
+        releaseSuffix.startsWith("-beta") -> RustChannel.BETA
+        releaseSuffix.startsWith("-nightly") -> RustChannel.NIGHTLY
+        else -> RustChannel.DEFAULT
+    }
+    return RustcVersion(semVer, hostText, channel)
 }
 
 private object Suggestions {

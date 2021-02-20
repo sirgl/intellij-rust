@@ -9,12 +9,17 @@ import com.intellij.lang.ASTNode
 import com.intellij.psi.PsiElement
 import com.intellij.psi.stubs.IStubElementType
 import org.rust.ide.icons.RsIcons
-import org.rust.lang.core.macros.ExpansionResult
+import org.rust.lang.core.macros.RsExpandedElement
 import org.rust.lang.core.psi.RsExternCrateItem
 import org.rust.lang.core.psi.RsPsiImplUtil
 import org.rust.lang.core.resolve.ref.RsExternCrateReferenceImpl
 import org.rust.lang.core.resolve.ref.RsReference
 import org.rust.lang.core.stubs.RsExternCrateItemStub
+
+val RsExternCrateItem.nameWithAlias: String get() = alias?.name ?: referenceName
+
+val RsExternCrateItem.hasMacroUse: Boolean get() =
+    queryAttributes.hasAttribute("macro_use")
 
 abstract class RsExternCrateItemImplMixin : RsStubbedNamedElementImpl<RsExternCrateItemStub>,
                                             RsExternCrateItem {
@@ -33,8 +38,5 @@ abstract class RsExternCrateItemImplMixin : RsStubbedNamedElementImpl<RsExternCr
 
     override fun getIcon(flags: Int) = RsIcons.CRATE
 
-    override fun getContext() = ExpansionResult.getContextImpl(this)
+    override fun getContext(): PsiElement? = RsExpandedElement.getContextImpl(this)
 }
-
-val RsExternCrateItem.hasMacroUse: Boolean get() =
-    queryAttributes.hasAttribute("macro_use")

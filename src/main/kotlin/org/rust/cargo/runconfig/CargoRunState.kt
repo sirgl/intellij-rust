@@ -51,8 +51,10 @@ class CargoRunState(
 
     fun computeSysroot(): String? {
         val projectDirectory = cargoProject?.manifest?.parent ?: return null
-        return toolchain.rustup(projectDirectory)?.getSysroot()
+        return toolchain.getSysroot(projectDirectory)
     }
+
+    fun rustVersion(): RustToolchain.VersionInfo = toolchain.queryVersions()
 
     override fun startProcess(): ProcessHandler {
         val cmd = toolchain.cargoOrWrapper(cargoProject?.manifest?.parent)

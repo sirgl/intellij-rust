@@ -481,4 +481,30 @@ class RsStdlibExpressionTypeInferenceTest : RsTypificationTestBase() {
           //^ Result<(), Error>
         }
     """)
+
+    fun `test write macro &mut`() = stubOnlyTypeInfer("""
+    //- main.rs
+        use std::fmt::Write;
+        fn main() {
+            let mut s = String::new();
+            let a = write!(&mut s, "text");
+            a;
+          //^ Result<(), Error>
+        }
+    """)
+
+    // https://github.com/intellij-rust/intellij-rust/issues/2514
+    fun `test issue 2514`() = stubOnlyTypeInfer("""
+    //- main.rs
+        struct Foo {
+            bar: Box<i32>
+        }
+
+        impl Foo {
+            fn test(&self) {
+                let b = self.bar.as_ref().clone();
+                b;
+            } //^ i32
+        }
+    """)
 }

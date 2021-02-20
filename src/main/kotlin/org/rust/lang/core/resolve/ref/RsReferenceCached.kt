@@ -7,17 +7,16 @@ package org.rust.lang.core.resolve.ref
 
 import com.intellij.psi.PsiElementResolveResult
 import com.intellij.psi.ResolveResult
-import com.intellij.psi.impl.source.resolve.ResolveCache
 import org.rust.lang.core.psi.ext.RsElement
 import org.rust.lang.core.psi.ext.RsNamedElement
-import org.rust.lang.core.psi.ext.RsReferenceElement
+import org.rust.lang.core.psi.ext.RsWeakReferenceElement
 
-abstract class RsReferenceCached<T : RsReferenceElement>(
+abstract class RsReferenceCached<T : RsWeakReferenceElement>(
     element: T
 ) : RsReferenceBase<T>(element),
     RsReference {
 
-    abstract protected fun resolveInner(): List<RsElement>
+    protected abstract fun resolveInner(): List<RsElement>
 
     final override fun multiResolve(incompleteCode: Boolean): Array<out ResolveResult> =
         cachedMultiResolve().toTypedArray()
@@ -26,15 +25,13 @@ abstract class RsReferenceCached<T : RsReferenceElement>(
         cachedMultiResolve().mapNotNull { it.element as? RsNamedElement }
 
     private fun cachedMultiResolve(): List<PsiElementResolveResult> {
-        return ResolveCache.getInstance(element.project)
-            .resolveWithCaching(this, Resolver,
-                /* needToPreventRecursion = */ true,
-                /* incompleteCode = */ false).orEmpty()
+        return RsResolveCache.getInstance(element.project)
+            .resolveWithCaching(element, Resolver).orEmpty()
     }
 
-    private object Resolver : ResolveCache.AbstractResolver<RsReferenceCached<*>, List<PsiElementResolveResult>> {
-        override fun resolve(ref: RsReferenceCached<*>, incompleteCode: Boolean): List<PsiElementResolveResult> {
-            return ref.resolveInner().map { PsiElementResolveResult(it) }
+    private object Resolver : (RsWeakReferenceElement) -> List<PsiElementResolveResult> {
+        override fun invoke(ref: RsWeakReferenceElement): List<PsiElementResolveResult> {
+            return (ref.reference as RsReferenceCached<*>).resolveInner().map { PsiElementResolveResult(it) }
         }
     }
 }

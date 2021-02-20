@@ -31,6 +31,7 @@ import org.jetbrains.annotations.TestOnly
 import org.rust.cargo.project.model.CargoProject
 import org.rust.cargo.project.model.CargoProject.UpdateStatus
 import org.rust.cargo.project.model.CargoProjectsService
+import org.rust.cargo.project.model.RustcInfo
 import org.rust.cargo.project.settings.RustProjectSettingsService
 import org.rust.cargo.project.settings.rustSettings
 import org.rust.cargo.project.settings.toolchain
@@ -171,9 +172,9 @@ class CargoProjectsServiceImpl(
     ): CompletableFuture<List<CargoProjectImpl>> =
         projects.updateAsync(f)
             .thenApply { projects ->
-                directoryIndex.resetIndex()
                 ApplicationManager.getApplication().invokeAndWait {
                     runWriteAction {
+                        directoryIndex.resetIndex()
                         ProjectRootManagerEx.getInstanceEx(project)
                             .makeRootsChange(EmptyRunnable.getInstance(), false, true)
                     }
@@ -185,12 +186,22 @@ class CargoProjectsServiceImpl(
             }
 
     @TestOnly
-    override fun createTestProject(rootDir: VirtualFile, ws: CargoWorkspace) {
+    override fun createTestProject(rootDir: VirtualFile, ws: CargoWorkspace, rustcInfo: RustcInfo?) {
         val manifest = rootDir.pathAsPath.resolve("Cargo.toml")
-        val testProject = CargoProjectImpl(manifest, this, ws, null, UpdateStatus.UpToDate)
+        val testProject = CargoProjectImpl(manifest, this, ws, null, rustcInfo,
+            workspaceStatus = UpdateStatus.UpToDate,
+            rustcInfoStatus = if (rustcInfo != null) UpdateStatus.UpToDate else UpdateStatus.NeedsUpdate)
         testProject.setRootDir(rootDir)
         modifyProjects { _ ->
             CompletableFuture.completedFuture(listOf(testProject))
+        }.get(1, TimeUnit.MINUTES)
+    }
+
+    @TestOnly
+    override fun setRustcInfo(rustcInfo: RustcInfo) {
+        modifyProjects { projects ->
+            val updatedProjects = projects.map { it.copy(rustcInfo = rustcInfo, rustcInfoStatus = UpdateStatus.UpToDate) }
+            CompletableFuture.completedFuture(updatedProjects)
         }.get(1, TimeUnit.MINUTES)
     }
 
@@ -234,8 +245,10 @@ data class CargoProjectImpl(
     private val projectService: CargoProjectsServiceImpl,
     private val rawWorkspace: CargoWorkspace? = null,
     private val stdlib: StandardLibrary? = null,
+    override val rustcInfo: RustcInfo? = null,
     override val workspaceStatus: CargoProject.UpdateStatus = UpdateStatus.NeedsUpdate,
-    override val stdlibStatus: CargoProject.UpdateStatus = UpdateStatus.NeedsUpdate
+    override val stdlibStatus: CargoProject.UpdateStatus = UpdateStatus.NeedsUpdate,
+    override val rustcInfoStatus: UpdateStatus = UpdateStatus.NeedsUpdate
 ) : CargoProject {
 
     private val projectDirectory get() = manifest.parent
@@ -271,7 +284,9 @@ data class CargoProjectImpl(
                 stdlibStatus = UpdateStatus.UpdateFailed("Project directory does not exist"))
             )
         }
-        return refreshStdlib().thenCompose { it.refreshWorkspace() }
+        return refreshRustcInfo()
+            .thenCompose { it.refreshStdlib() }
+            .thenCompose { it.refreshWorkspace() }
     }
 
     private fun refreshStdlib(): CompletableFuture<CargoProjectImpl> {
@@ -307,6 +322,21 @@ data class CargoProjectImpl(
     private fun withWorkspace(result: TaskResult<CargoWorkspace>): CargoProjectImpl = when (result) {
         is TaskResult.Ok -> copy(rawWorkspace = result.value, workspaceStatus = UpdateStatus.UpToDate)
         is TaskResult.Err -> copy(workspaceStatus = UpdateStatus.UpdateFailed(result.reason))
+    }
+
+    private fun refreshRustcInfo(): CompletableFuture<CargoProjectImpl> {
+        val toolchain = toolchain
+            ?: return CompletableFuture.completedFuture(copy(rustcInfoStatus = UpdateStatus.UpdateFailed(
+                "Can't get rustc info, no Rust toolchain"
+            )))
+
+        return fetchRustcInfo(project, projectService.taskQueue, toolchain, projectDirectory)
+            .thenApply(this::withRustcInfo)
+    }
+
+    private fun withRustcInfo(result: TaskResult<RustcInfo>): CargoProjectImpl = when (result) {
+        is TaskResult.Ok -> copy(rustcInfo = result.value, rustcInfoStatus = UpdateStatus.UpToDate)
+        is TaskResult.Err -> copy(rustcInfoStatus = UpdateStatus.UpdateFailed(result.reason))
     }
 
     override fun toString(): String =
@@ -395,5 +425,27 @@ private fun fetchCargoWorkspace(
         } catch (e: ExecutionException) {
             err(e.message ?: "failed to run Cargo")
         }
+    }
+}
+
+private fun fetchRustcInfo(
+    project: Project,
+    queue: BackgroundTaskQueue,
+    toolchain: RustToolchain,
+    projectDirectory: Path
+): CompletableFuture<TaskResult<RustcInfo>> {
+    return runAsyncTask(project, queue, "Getting toolchain version") {
+        progress.isIndeterminate = true
+        if (!toolchain.looksLikeValidToolchain()) {
+            return@runAsyncTask err(
+                "invalid Rust toolchain ${toolchain.presentableLocation}"
+            )
+        }
+
+        val sysroot = toolchain.getSysroot(projectDirectory)
+            ?: return@runAsyncTask err("failed to get project sysroot")
+        val versions = toolchain.queryVersions()
+
+        ok(RustcInfo(sysroot, versions.rustc))
     }
 }

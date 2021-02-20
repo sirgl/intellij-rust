@@ -18,21 +18,15 @@ import com.intellij.psi.PsiComment
 import com.intellij.psi.PsiDocumentManager
 import com.intellij.psi.PsiElement
 import com.intellij.psi.PsiWhiteSpace
-import com.intellij.psi.codeStyle.CodeStyleSettingsManager
 import com.intellij.psi.tree.TokenSet
 import com.intellij.psi.util.PsiTreeUtil
 import org.rust.lang.RsLanguage
-import org.rust.lang.core.leftLeaves
-import org.rust.lang.core.leftSiblings
 import org.rust.lang.core.parser.RustParserDefinition.Companion.BLOCK_COMMENT
 import org.rust.lang.core.parser.RustParserDefinition.Companion.INNER_EOL_DOC_COMMENT
 import org.rust.lang.core.parser.RustParserDefinition.Companion.OUTER_EOL_DOC_COMMENT
 import org.rust.lang.core.psi.*
 import org.rust.lang.core.psi.RsElementTypes.*
-import org.rust.lang.core.psi.ext.elementType
-import org.rust.lang.core.psi.ext.getNextNonCommentSibling
-import org.rust.lang.core.psi.ext.getPrevNonCommentSibling
-import org.rust.lang.core.rightSiblings
+import org.rust.lang.core.psi.ext.*
 import java.lang.Integer.max
 import java.util.*
 
@@ -45,6 +39,7 @@ class RsFoldingBuilder : FoldingBuilderEx(), DumbAware {
             node.psi is RsModDeclItem -> "/* mods */"
             node.psi is RsExternCrateItem -> "/* crates */"
             node.psi is PsiComment -> "/* ... */"
+            node.psi is RsValueParameterList -> "(...)"
             else -> "{...}"
         }
 
@@ -91,6 +86,11 @@ class RsFoldingBuilder : FoldingBuilderEx(), DumbAware {
         override fun visitModItem(o: RsModItem) = foldBetween(o, o.lbrace, o.rbrace)
 
         override fun visitMacroArgument(o: RsMacroArgument) = foldBetween(o, o.lbrace, o.rbrace)
+
+        override fun visitValueParameterList(o: RsValueParameterList) {
+            if (o.valueParameterList.isEmpty()) return
+            foldBetween(o, o.firstChild, o.lastChild)
+        }
 
         override fun visitComment(comment: PsiComment) {
             when (comment.tokenType) {

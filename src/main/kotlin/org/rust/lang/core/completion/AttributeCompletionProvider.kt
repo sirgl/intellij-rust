@@ -25,7 +25,7 @@ import org.rust.lang.core.RsPsiPattern.onExternBlock
 import org.rust.lang.core.RsPsiPattern.onExternBlockDecl
 import org.rust.lang.core.RsPsiPattern.onExternCrate
 import org.rust.lang.core.RsPsiPattern.onFn
-import org.rust.lang.core.RsPsiPattern.onMacroDefinition
+import org.rust.lang.core.RsPsiPattern.onMacro
 import org.rust.lang.core.RsPsiPattern.onMod
 import org.rust.lang.core.RsPsiPattern.onStatic
 import org.rust.lang.core.RsPsiPattern.onStaticMut
@@ -35,6 +35,7 @@ import org.rust.lang.core.RsPsiPattern.onTrait
 import org.rust.lang.core.RsPsiPattern.onTupleStruct
 import org.rust.lang.core.psi.*
 import org.rust.lang.core.psi.ext.RsDocAndAttributeOwner
+import org.rust.lang.core.psi.ext.name
 import org.rust.lang.core.psi.ext.queryAttributes
 
 object AttributeCompletionProvider : CompletionProvider<CompletionParameters>() {
@@ -53,7 +54,7 @@ object AttributeCompletionProvider : CompletionProvider<CompletionParameters>() 
         onStruct to "repr unsafe_no_drop_flags derive()",
         onEnum to "repr derive()",
         onTrait to "rustc_on_unimplemented",
-        onMacroDefinition to "macro_export",
+        onMacro to "macro_export",
         onStatic to "export_name link_section",
         onAnyItem to "no_mangle doc cfg() cfg_attr() allow() warn() forbid() deny()",
         onTupleStruct to "simd",
@@ -94,7 +95,7 @@ object AttributeCompletionProvider : CompletionProvider<CompletionParameters>() 
 
     private val PsiElement?.attrMetaItems: Sequence<String>
         get() = if (this is RsDocAndAttributeOwner)
-            queryAttributes.metaItems.map { it.identifier.text }
+            queryAttributes.metaItems.mapNotNull { it.name }
         else
             emptySequence()
 }

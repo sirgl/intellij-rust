@@ -80,9 +80,17 @@ inline fun <T> List<T>.singleOrLet(function: (List<T>) -> List<T>): List<T> = wh
     else -> function(this)
 }
 
+inline fun <T> List<T>.notEmptyOrLet(function: (List<T>) -> List<T>): List<T> = when {
+    isNotEmpty() -> this
+    else -> function(this)
+}
+
 fun <T> List<T>.chain(other: List<T>): Sequence<T> =
     when {
         other.isEmpty() -> this.asSequence()
         this.isEmpty() -> other.asSequence()
         else -> this.asSequence() + other.asSequence()
     }
+
+fun <T : Any> Iterator<T>.nextOrNull(): T? =
+    if (hasNext()) next() else null

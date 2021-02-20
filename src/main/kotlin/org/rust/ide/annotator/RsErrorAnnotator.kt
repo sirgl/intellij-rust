@@ -13,12 +13,18 @@ import com.intellij.openapi.util.Key
 import com.intellij.psi.PsiElement
 import com.intellij.psi.PsiFile
 import org.rust.cargo.project.workspace.PackageOrigin
+import org.rust.cargo.toolchain.RustChannel
+import org.rust.ide.annotator.fixes.AddFeatureAttributeFix
 import org.rust.ide.annotator.fixes.AddModuleFileFix
 import org.rust.ide.annotator.fixes.AddTurbofishFix
+import org.rust.lang.core.CRATE_VISIBILITY_MODIFIER
+import org.rust.lang.core.CompilerFeature
+import org.rust.lang.core.FeatureState.*
 import org.rust.lang.core.psi.*
 import org.rust.lang.core.psi.ext.*
 import org.rust.lang.core.resolve.Namespace
 import org.rust.lang.core.resolve.namespaces
+import org.rust.lang.core.stubs.index.RsFeatureIndex
 import org.rust.lang.core.types.inference
 import org.rust.lang.core.types.ty.*
 import org.rust.lang.core.types.type
@@ -50,7 +56,7 @@ class RsErrorAnnotator : Annotator, HighlightRangeExtension {
             override fun visitTraitItem(o: RsTraitItem) = checkDuplicates(holder, o)
             override fun visitTypeAlias(o: RsTypeAlias) = checkTypeAlias(holder, o)
             override fun visitTypeParameter(o: RsTypeParameter) = checkDuplicates(holder, o)
-            override fun visitLifetimeParameter(o: RsLifetimeParameter) = checkDuplicates(holder, o)
+            override fun visitLifetimeParameter(o: RsLifetimeParameter) = checkLifetimeParameter(holder, o)
             override fun visitVis(o: RsVis) = checkVis(holder, o)
             override fun visitBinaryExpr(o: RsBinaryExpr) = checkBinary(holder, o)
             override fun visitCallExpr(o: RsCallExpr) = checkCallExpr(holder, o)
@@ -194,10 +200,62 @@ class RsErrorAnnotator : Annotator, HighlightRangeExtension {
         checkReferenceIsPublic(path, path, holder)
     }
 
+    private fun checkLifetimeParameter(holder: AnnotationHolder, lifetimeParameter: RsLifetimeParameter) {
+        checkReservedLifetimeName(holder, lifetimeParameter)
+        checkDuplicates(holder, lifetimeParameter)
+    }
+
+    private fun checkReservedLifetimeName(holder: AnnotationHolder, lifetimeParameter: RsLifetimeParameter) {
+        val lifetimeName = lifetimeParameter.quoteIdentifier.text
+        if (lifetimeName in RESERVED_LIFETIME_NAMES) {
+            RsDiagnostic.ReservedLifetimeNameError(lifetimeParameter, lifetimeName).addToHolder(holder)
+        }
+    }
+
     private fun checkVis(holder: AnnotationHolder, vis: RsVis) {
         if (vis.parent is RsImplItem || vis.parent is RsForeignModItem || isInTraitImpl(vis) || isInEnumVariantField(vis)) {
             RsDiagnostic.UnnecessaryVisibilityQualifierError(vis).addToHolder(holder)
         }
+        checkCrateVisibilityModifier(holder, vis)
+    }
+
+    private fun checkCrateVisibilityModifier(holder: AnnotationHolder, vis: RsVis) {
+        val crateModifier = vis.crate ?: return
+        checkFeature(holder, crateModifier, CRATE_VISIBILITY_MODIFIER, "`crate` visibility modifier")
+    }
+
+    private fun checkFeature(
+        holder: AnnotationHolder,
+        element: PsiElement,
+        feature: CompilerFeature,
+        presentableFeatureName: String
+    ) {
+        val rsElement = element.ancestorOrSelf<RsElement>() ?: return
+        val version = rsElement.cargoProject?.rustcInfo?.version ?: return
+
+        val diagnostic = when (feature.state) {
+            ACTIVE -> {
+                if (version.channel != RustChannel.NIGHTLY) {
+                    RsDiagnostic.ExperimentalFeature(element, presentableFeatureName)
+                } else {
+                    val crateRoot = rsElement.crateRoot ?: return
+                    val attrs = RsFeatureIndex.getFeatureAttributes(element.project, feature.name)
+                    if (attrs.none { it.crateRoot == crateRoot }) {
+                        val fix = AddFeatureAttributeFix(feature.name, crateRoot)
+                        RsDiagnostic.ExperimentalFeature(element, presentableFeatureName, fix)
+                    } else {
+                        null
+                    }
+                }
+
+            }
+            ACCEPTED -> if (version.semver < feature.since) {
+                RsDiagnostic.ExperimentalFeature(element, presentableFeatureName)
+            } else {
+                null
+            }
+        }
+        diagnostic?.addToHolder(holder)
     }
 
     private fun checkLabel(holder: AnnotationHolder, label: RsLabel) {
@@ -374,6 +432,10 @@ class RsErrorAnnotator : Annotator, HighlightRangeExtension {
 
     private fun hasResolve(el: RsReferenceElement): Boolean =
         !(el.reference.resolve() != null || el.reference.multiResolve().size > 1)
+
+    companion object {
+        private val RESERVED_LIFETIME_NAMES: Set<String> = setOf("'_", "'static")
+    }
 }
 
 private fun RsExpr?.isComparisonBinaryExpr(): Boolean {
@@ -407,7 +469,6 @@ private fun checkDuplicates(holder: AnnotationHolder, element: RsNameIdentifierO
     }
     message.addToHolder(holder)
 }
-
 
 private fun AnnotationSession.duplicatesByNamespace(owner: PsiElement, recursively: Boolean): Map<Namespace, Set<PsiElement>> {
     val fileMap = fileDuplicatesMap()

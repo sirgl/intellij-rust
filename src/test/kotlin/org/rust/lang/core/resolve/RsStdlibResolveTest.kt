@@ -114,19 +114,21 @@ class RsStdlibResolveTest : RsResolveTestBase() {
                                 //^ unresolved
     """)
 
+    // BACKCOMPAT: Rust 1.26.0
     fun `test string slice resolve`() = stubOnlyResolve("""
 
     //- main.rs
         fn main() { "test".lines(); }
-                            //^ ...str.rs
+                            //^ ...str.rs|...str/mod.rs
     """)
 
+    // BACKCOMPAT: Rust 1.26.0
     fun `test slice resolve`() = stubOnlyResolve("""
     //- main.rs
         fn main() {
             let x : [i32];
             x.iter()
-             //^ ...slice.rs
+             //^ ...slice.rs|...slice/mod.rs
         }
     """)
 
@@ -277,10 +279,13 @@ class RsStdlibResolveTest : RsResolveTestBase() {
 
     fun `test array indexing`() = stubOnlyResolve("""
     //- main.rs
+        struct Foo(i32);
+        impl Foo { fn foo(&self) {} }
+
         fn main() {
-            let xs = ["foo", "bar"];
-            xs[0].len();
-                 //^ ...str.rs
+            let xs = [Foo(0), Foo(123)];
+            xs[0].foo();
+                 //^ ...main.rs
         }
     """)
 
@@ -292,11 +297,12 @@ class RsStdlibResolveTest : RsResolveTestBase() {
         }
     """)
 
+    // BACKCOMPAT: Rust 1.26.0
     fun `test vec slice`() = stubOnlyResolve("""
     //- main.rs
         fn foo(xs: Vec<i32>) {
             xs[0..3].len();
-                     //^ ...slice.rs
+                     //^ ...slice.rs|...slice/mod.rs
         }
     """)
 
@@ -510,18 +516,18 @@ class RsStdlibResolveTest : RsResolveTestBase() {
     fun `test method defined in out of scope trait from prelude`() = stubOnlyResolve("""
     //- a.rs
         use super::S;
-        impl Into<u8> for S { fn into(&self) -> u8 { unimplemented!() } }
+        impl Into<u8> for S { fn into(self) -> u8 { unimplemented!() } }
     //- b.rs
         use super::S;
-        pub trait B { fn into(&self) -> u8 { unimplemented!() } }
+        pub trait B where Self: Sized { fn into(self) -> u8 { unimplemented!() } }
         impl B for S {}
     //- main.rs
         mod a; mod b;
         struct S;
 
         fn main() {
-            S.into();
-        }   //^ a.rs
+            let _: u8 = S.into();
+        }               //^ a.rs
     """, TypeInferenceMarks.methodPickTraitScope)
 
     fun `test &str into String`() = stubOnlyResolve("""

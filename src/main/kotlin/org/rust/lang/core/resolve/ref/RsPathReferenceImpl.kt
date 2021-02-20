@@ -7,23 +7,25 @@ package org.rust.lang.core.resolve.ref
 
 import com.intellij.psi.PsiElement
 import com.intellij.psi.ResolveResult
-import com.intellij.psi.impl.source.resolve.ResolveCache
 import org.rust.lang.core.psi.*
 import org.rust.lang.core.psi.ext.*
 import org.rust.lang.core.resolve.*
 import org.rust.lang.core.types.BoundElement
+import org.rust.lang.core.types.Substitution
 import org.rust.lang.core.types.infer.foldTyInferWith
+import org.rust.lang.core.types.infer.resolve
 import org.rust.lang.core.types.infer.substitute
 import org.rust.lang.core.types.inference
+import org.rust.lang.core.types.regions.ReEarlyBound
+import org.rust.lang.core.types.regions.Region
 import org.rust.lang.core.types.ty.*
 import org.rust.lang.core.types.type
 import org.rust.stdext.buildMap
 
-
 class RsPathReferenceImpl(
     element: RsPath
 ) : RsReferenceBase<RsPath>(element),
-    RsPathReference{
+    RsPathReference {
 
     override val RsPath.referenceAnchor: PsiElement get() = referenceNameElement
 
@@ -50,19 +52,17 @@ class RsPathReferenceImpl(
         advancedMultiResolve().mapNotNull { it.element as? RsNamedElement }
 
     private fun advancedCachedMultiResolve(): List<BoundElement<RsElement>> {
-        return ResolveCache.getInstance(element.project)
-            .resolveWithCaching(this, Resolver,
-                /* needToPreventRecursion = */ true,
-                /* incompleteCode = */ false)
+        return RsResolveCache.getInstance(element.project)
+            .resolveWithCaching(element, Resolver)
             .orEmpty()
             // We can store a fresh `TyInfer.TyVar` to the cache for `_` path parameter (like `Vec<_>`), but
             // TyVar is mutable type, so we must copy it after retrieving from the cache
             .map { it.foldTyInferWith { if (it is TyInfer.TyVar) TyInfer.TyVar(it.origin) else it } }
     }
 
-    private object Resolver : ResolveCache.AbstractResolver<RsPathReferenceImpl, List<BoundElement<RsElement>>> {
-        override fun resolve(ref: RsPathReferenceImpl, incompleteCode: Boolean): List<BoundElement<RsElement>> {
-            return resolvePath(ref.element)
+    private object Resolver : (RsPath) -> List<BoundElement<RsElement>> {
+        override fun invoke(element: RsPath): List<BoundElement<RsElement>> {
+            return resolvePath(element)
         }
     }
 }
@@ -83,6 +83,8 @@ fun resolvePath(path: RsPath, lookup: ImplLookup = ImplLookup.relativeTo(path)):
             else -> null
         }
     }
+
+    val lifetimeArguments: List<Region>? = path.typeArgumentList?.lifetimeList?.map { it.resolve() }
 
     val outputArg = path.retType?.typeReference?.type
 
@@ -114,12 +116,12 @@ fun resolvePath(path: RsPath, lookup: ImplLookup = ImplLookup.relativeTo(path)):
             }
         }
 
-        val parameters = element.typeParameters.map { TyTypeParameter.named(it) }
-
-        BoundElement(element,
-            subst + parameters.zip(typeArguments ?: parameters).toMap(),
-            assocTypes
-        )
+        val typeParameters = element.typeParameters.map { TyTypeParameter.named(it) }
+        val lifetimeParameters = element.lifetimeParameters.map { ReEarlyBound(it) }
+        val typeSubst = typeParameters.zip(typeArguments ?: typeParameters).toMap()
+        val lifetimeSubst = lifetimeParameters.zip(lifetimeArguments ?: lifetimeParameters).toMap()
+        val newSubst = Substitution(typeSubst, lifetimeSubst)
+        BoundElement(element, subst + newSubst, assocTypes)
     }
 }
 

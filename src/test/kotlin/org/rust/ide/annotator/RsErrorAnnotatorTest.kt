@@ -5,7 +5,9 @@
 
 package org.rust.ide.annotator
 
-class RsErrorAnnotatorTest : RsAnnotatorTestBase() {
+import org.rust.lang.MockRustcVersion
+
+class RsErrorAnnotatorTest : RsAnnotationTestBase() {
     override val dataPath = "org/rust/ide/annotator/fixtures/errors"
 
     fun `test invalid module declarations`() = doTest("helper.rs")
@@ -432,6 +434,15 @@ class RsErrorAnnotatorTest : RsAnnotatorTestBase() {
         fn foo(a: &'static str) {}
     """)
 
+    fun `test reserved lifetime names E0262`() = checkErrors("""
+        fn foo<<error descr="`'_` is a reserved lifetime name [E0262]">'_</error>>(x: &'_ str) {}
+        fn bar<<error descr="`'static` is a reserved lifetime name [E0262]">'static</error>>(x: &'static str) {}
+        struct Str<<error>'static</error>> { a: &'static u32 }
+        impl<<error>'static</error>> Str<'static> {}
+        enum En<<error>'static</error>> { A(&'static str) }
+        trait Tr<<error>'static</error>> {}
+    """)
+
     fun `test lifetime name duplication in generic params E0263`() = checkErrors("""
         fn foo<'a, 'b>(x: &'a str, y: &'b str) { }
         struct Str<'a, 'b> { a: &'a u32, b: &'b f64 }
@@ -467,6 +478,18 @@ class RsErrorAnnotatorTest : RsAnnotatorTestBase() {
         impl T for () {
             fn foo() {}
             fn <error descr="Method `quux` is not a member of trait `T` [E0407]">quux</error>() {}
+        }
+    """)
+
+    fun `test no E0407 for method defined with a macro`() = checkErrors("""
+        macro_rules! foo {
+            ($ i:ident, $ j:ty) => { fn $ i(&self) -> $ j { unimplemented!() } }
+        }
+        trait T {
+            foo!(foo, ());
+        }
+        impl T for () {
+            fn foo(&self) {}
         }
     """)
 
@@ -1121,6 +1144,32 @@ class RsErrorAnnotatorTest : RsAnnotatorTestBase() {
     fun `test trait method can return Self type E0277`() = checkErrors("""
         trait Foo {
             fn foo() -> Self;
+        }
+    """)
+
+    @MockRustcVersion("1.27.1")
+    fun `test crate visibility feature E0658`() = checkErrors("""
+        <error descr="`crate` visibility modifier is experimental [E0658]">crate</error> struct Foo;
+    """)
+
+    @MockRustcVersion("1.29.0-nightly")
+    fun `test crate visibility feature E0658 2`() = checkErrors("""
+        <error descr="`crate` visibility modifier is experimental [E0658]">crate</error> struct Foo;
+    """)
+
+    @MockRustcVersion("1.29.0-nightly")
+    fun `test crate visibility feature E0658 3`() = checkErrors("""
+        #![feature(crate_visibility_modifier)]
+
+        crate struct Foo;
+    """)
+
+    @MockRustcVersion("1.29.0-nightly")
+    fun `test crate visibility feature E0658 4`() = checkErrors("""
+        crate struct Foo;
+
+        mod foo {
+            #![feature(crate_visibility_modifier)]
         }
     """)
 }

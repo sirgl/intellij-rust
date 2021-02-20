@@ -9,13 +9,17 @@ import com.intellij.openapi.project.Project
 import com.intellij.psi.PsiElement
 import com.intellij.psi.PsiFileFactory
 import com.intellij.psi.PsiParserFacade
-import org.rust.ide.presentation.insertionSafeText
+import org.rust.ide.presentation.insertionSafeTextWithLifetimes
 import org.rust.lang.RsFileType
 import org.rust.lang.core.psi.ext.*
-import org.rust.lang.core.resolve.ref.RsReference
+import org.rust.lang.core.types.Substitution
+import org.rust.lang.core.types.emptySubstitution
+import org.rust.lang.core.types.infer.resolve
 import org.rust.lang.core.types.infer.substitute
-import org.rust.lang.core.types.ty.Substitution
-import org.rust.lang.core.types.ty.emptySubstitution
+import org.rust.lang.core.types.regions.ReUnknown
+import org.rust.lang.core.types.ty.Mutability
+import org.rust.lang.core.types.ty.Mutability.IMMUTABLE
+import org.rust.lang.core.types.ty.Mutability.MUTABLE
 import org.rust.lang.core.types.type
 import org.rust.lang.refactoring.extractFunction.RsExtractFunctionConfig
 
@@ -24,7 +28,7 @@ class RsPsiFactory(private val project: Project) {
         PsiFileFactory.getInstance(project)
             .createFileFromText("DUMMY.rs", RsFileType, text) as RsFile
 
-    fun createMacroDefinitionBody(text: String): RsMacroDefinitionBody? = createFromText(
+    fun createMacroBody(text: String): RsMacroBody? = createFromText(
         "macro_rules! m $text"
     )
 
@@ -213,9 +217,20 @@ class RsPsiFactory(private val project: Project) {
             ?: error("Failed to create type from text: `$text`")
     }
 
+    fun createTypeArgumentList(
+        params: Iterable<String>
+    ): RsTypeArgumentList {
+        val text = params.joinToString(prefix = "<", separator = ", ", postfix = ">")
+        return createFromText("type T = a$text") ?: error("Failed to create type argument from text: `$text`")
+    }
+
     fun createOuterAttr(text: String): RsOuterAttr =
         createFromText("#[$text] struct Dummy;")
             ?: error("Failed to create an outer attribute from text: `$text`")
+
+    fun createInnerAttr(text: String): RsInnerAttr =
+        createFromText("#![$text]")
+            ?: error("Failed to create an inner attribute from text: `$text`")
 
     fun createMatchBody(enumName: String?, variants: List<RsEnumVariant>): RsMatchBody {
         val matchBodyText = variants.joinToString(",\n", postfix = ",") { variant ->
@@ -288,6 +303,22 @@ class RsPsiFactory(private val project: Project) {
         else -> createExpressionOfType("${expr.text}.$methodNameText()")
     }
 
+    fun createDerefExpr(expr: RsExpr, nOfDerefs: Int = 1): RsExpr =
+        if (nOfDerefs > 0)
+            when (expr) {
+                is RsBinaryExpr, is RsCastExpr -> createExpressionOfType("${"*".repeat(nOfDerefs)}(${expr.text})")
+                else -> createExpressionOfType("${"*".repeat(nOfDerefs)}${expr.text}")
+            }
+        else expr
+
+    fun createRefExpr(expr: RsExpr, muts: List<Mutability> = listOf(IMMUTABLE)): RsExpr =
+        if (!muts.none())
+            when (expr) {
+                is RsBinaryExpr, is RsCastExpr -> createExpressionOfType("${mutsToRefs(muts)}(${expr.text})")
+                else -> createExpressionOfType("${mutsToRefs(muts)}${expr.text}")
+            }
+        else expr
+
     private inline fun <reified E : RsExpr> createExpressionOfType(text: String): E =
         createExpression(text) as? E
             ?: error("Failed to create ${E::class.simpleName} from `$text`")
@@ -300,10 +331,12 @@ private fun RsFunction.getSignatureText(subst: Substitution): String? {
     val name = name ?: return null
     val generics = typeParameterList?.text ?: ""
 
-    val allArguments = listOfNotNull(selfParameter?.text) + valueParameters.map {
+    val selfArgument = listOfNotNull(selfParameter?.substAndGetText(subst))
+    val valueArguments = valueParameters.map {
         // fix possible anon parameter
         "${it.pat?.text ?: "_"}: ${it.typeReference?.substAndGetText(subst) ?: "()"}"
     }
+    val allArguments = selfArgument + valueArguments
 
     val ret = retType?.typeReference?.substAndGetText(subst)?.let { "-> $it " } ?: ""
     val where = whereClause?.text ?: ""
@@ -313,4 +346,21 @@ private fun RsFunction.getSignatureText(subst: Substitution): String? {
 private fun String.iff(cond: Boolean) = if (cond) this + " " else " "
 
 private fun RsTypeReference.substAndGetText(subst: Substitution): String =
-    type.substitute(subst).insertionSafeText
+    type.substitute(subst).insertionSafeTextWithLifetimes
+
+private fun RsSelfParameter.substAndGetText(subst: Substitution): String =
+    buildString {
+        append(and?.text ?: "")
+        val lifetime = lifetime.resolve().substitute(subst)
+        if (lifetime != ReUnknown) append("$lifetime ")
+        if (mutability == MUTABLE) append("mut ")
+        append(self.text)
+    }
+
+private fun mutsToRefs(mutability: List<Mutability>): String =
+    mutability.joinToString("", "", "") {
+        when (it) {
+            IMMUTABLE -> "&"
+            MUTABLE -> "&mut "
+        }
+    }

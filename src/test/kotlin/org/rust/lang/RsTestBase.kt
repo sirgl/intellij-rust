@@ -22,10 +22,12 @@ import com.intellij.testFramework.UsefulTestCase
 import com.intellij.testFramework.VfsTestUtil
 import com.intellij.testFramework.fixtures.CodeInsightTestFixture
 import com.intellij.testFramework.fixtures.LightPlatformCodeInsightFixtureTestCase
+import com.intellij.util.text.SemVer
 import junit.framework.AssertionFailedError
 import org.intellij.lang.annotations.Language
 import org.rust.FileTree
 import org.rust.TestProject
+import org.rust.cargo.project.model.RustcInfo
 import org.rust.cargo.project.model.cargoProjects
 import org.rust.cargo.project.workspace.CargoWorkspace
 import org.rust.cargo.project.workspace.CargoWorkspace.CrateType
@@ -33,7 +35,9 @@ import org.rust.cargo.project.workspace.CargoWorkspace.TargetKind
 import org.rust.cargo.project.workspace.CargoWorkspaceData
 import org.rust.cargo.project.workspace.PackageOrigin
 import org.rust.cargo.project.workspace.StandardLibrary
+import org.rust.cargo.toolchain.RustChannel
 import org.rust.cargo.toolchain.RustToolchain
+import org.rust.cargo.toolchain.RustcVersion
 import org.rust.cargo.toolchain.Rustup
 import org.rust.fileTreeFromText
 import org.rust.lang.core.psi.ext.ancestorOrSelf
@@ -50,6 +54,32 @@ abstract class RsTestBase : LightPlatformCodeInsightFixtureTestCase(), RsTestCas
 
     override fun getTestDataPath(): String = "${RsTestCase.testResourcesPath}/$dataPath"
 
+    override fun setUp() {
+        super.setUp()
+        val testMethod = javaClass.getMethod(name)
+        val version = testMethod.getAnnotation(MockRustcVersion::class.java)?.rustcVersion ?: return
+        val (semVer, channel) = parse(version)
+        val rustcInfo = RustcInfo("", RustcVersion(semVer, "", channel))
+        project.cargoProjects.setRustcInfo(rustcInfo)
+    }
+
+    private fun parse(version: String): Pair<SemVer, RustChannel> {
+        val versionRe = """(\d+\.\d+\.\d+)(.*)""".toRegex()
+        val result = versionRe.matchEntire(version) ?: error("$version should match `${versionRe.pattern}` pattern")
+
+        val versionText = result.groups[1]?.value ?: error("")
+        val semVer = SemVer.parseFromText(versionText) ?: error("")
+
+        val releaseSuffix = result.groups[2]?.value.orEmpty()
+        val channel = when {
+            releaseSuffix.isEmpty() -> RustChannel.STABLE
+            releaseSuffix.startsWith("-beta") -> RustChannel.BETA
+            releaseSuffix.startsWith("-nightly") -> RustChannel.NIGHTLY
+            else -> RustChannel.DEFAULT
+        }
+        return semVer to channel
+    }
+
     override fun runTest() {
         val projectDescriptor = projectDescriptor
         val reason = (projectDescriptor as? RustProjectDescriptorBase)?.skipTestReason
@@ -57,7 +87,6 @@ abstract class RsTestBase : LightPlatformCodeInsightFixtureTestCase(), RsTestCas
             System.err.println("SKIP $name: $reason")
             return
         }
-
         super.runTest()
     }
 
@@ -184,26 +213,10 @@ abstract class RsTestBase : LightPlatformCodeInsightFixtureTestCase(), RsTestCas
     }
 
     protected open class RustProjectDescriptorBase : LightProjectDescriptor() {
-        open class WithRustup : RustProjectDescriptorBase() {
-            private val toolchain: RustToolchain? by lazy { RustToolchain.suggest() }
-
-            private val rustup by lazy { toolchain?.rustup(Paths.get(".")) }
-            val stdlib by lazy { (rustup?.downloadStdlib() as? Rustup.DownloadResult.Ok)?.library }
-            val rustcVersion by lazy {
-                toolchain
-                    ?.queryVersionsSync()
-                    ?.rustc
-            }
-
-            override val skipTestReason: String?
-                get() {
-                    if (rustup == null) return "No rustup"
-                    if (stdlib == null) return "No stdib"
-                    return null
-                }
-        }
 
         open val skipTestReason: String? = null
+
+        open val rustcInfo: RustcInfo? = null
 
         final override fun configureModule(module: Module, model: ModifiableRootModel, contentEntry: ContentEntry) {
             super.configureModule(module, model, contentEntry)
@@ -211,10 +224,12 @@ abstract class RsTestBase : LightPlatformCodeInsightFixtureTestCase(), RsTestCas
 
             val projectDir = contentEntry.file!!
             val ws = testCargoProject(module, projectDir.url)
-            module.project.cargoProjects.createTestProject(projectDir, ws)
+            module.project.cargoProjects.createTestProject(projectDir, ws, rustcInfo)
         }
 
-        open protected fun testCargoProject(module: Module, contentRoot: String): CargoWorkspace {
+        open fun setUp(fixture: CodeInsightTestFixture) {}
+
+        open fun testCargoProject(module: Module, contentRoot: String): CargoWorkspace {
             val packages = listOf(testCargoPackage(contentRoot))
             return CargoWorkspace.deserialize(Paths.get("/my-crate/Cargo.toml"), CargoWorkspaceData(packages, emptyMap()))
         }
@@ -233,20 +248,40 @@ abstract class RsTestBase : LightPlatformCodeInsightFixtureTestCase(), RsTestCas
         )
     }
 
-    protected object DefaultDescriptor : RustProjectDescriptorBase()
+    protected open class WithRustup(private val delegate: RustProjectDescriptorBase) : RustProjectDescriptorBase() {
+        private val toolchain: RustToolchain? by lazy { RustToolchain.suggest() }
 
-    protected object WithStdlibRustProjectDescriptor : RustProjectDescriptorBase.WithRustup() {
+        private val rustup by lazy { toolchain?.rustup(Paths.get(".")) }
+        val stdlib by lazy { (rustup?.downloadStdlib() as? Rustup.DownloadResult.Ok)?.library }
+
+        override val skipTestReason: String?
+            get() {
+                if (rustup == null) return "No rustup"
+                if (stdlib == null) return "No stdib"
+                return null
+            }
+
+        override val rustcInfo: RustcInfo?
+            get() {
+                val toolchain = toolchain ?: return null
+                val sysroot = toolchain.getSysroot(Paths.get(".")) ?: return null
+                val rustcVersion = toolchain.queryVersions().rustc
+                return RustcInfo(sysroot, rustcVersion)
+            }
+
         override fun testCargoProject(module: Module, contentRoot: String): CargoWorkspace {
             val stdlib = StandardLibrary.fromFile(stdlib!!)!!
+            return delegate.testCargoProject(module, contentRoot).withStdlib(stdlib)
+        }
 
-            val packages = listOf(testCargoPackage(contentRoot))
-
-            return CargoWorkspace.deserialize(Paths.get("/my-crate/Cargo.toml"), CargoWorkspaceData(packages, emptyMap()))
-                .withStdlib(stdlib)
+        override fun setUp(fixture: CodeInsightTestFixture) {
+            delegate.setUp(fixture)
         }
     }
 
-    protected object WithStdlibAndDependencyRustProjectDescriptor : RustProjectDescriptorBase.WithRustup() {
+    protected object DefaultDescriptor : RustProjectDescriptorBase()
+
+    protected object WithDependencyRustProjectDescriptor : RustProjectDescriptorBase() {
         private fun externalPackage(contentRoot: String, source: String?, name: String, targetName: String = name): CargoWorkspaceData.Package {
             return CargoWorkspaceData.Package(
                 id = "$name 0.0.1",
@@ -263,7 +298,7 @@ abstract class RsTestBase : LightPlatformCodeInsightFixtureTestCase(), RsTestCas
             )
         }
 
-        fun setUp(fixture: CodeInsightTestFixture) {
+        override fun setUp(fixture: CodeInsightTestFixture) {
             val root = fixture.findFileInTempDir(".")!!
             for (source in listOf("dep-lib/lib.rs", "trans-lib/lib.rs")) {
                 VfsTestUtil.createFile(root, source)
@@ -280,16 +315,26 @@ abstract class RsTestBase : LightPlatformCodeInsightFixtureTestCase(), RsTestCas
             val depNodes = ArrayList<CargoWorkspaceData.DependencyNode>()
             depNodes.add(CargoWorkspaceData.DependencyNode(0, listOf(1, 2)))   // Our package depends on dep_lib and dep_nosrc_lib
 
-            val ws = CargoWorkspace.deserialize(Paths.get("/my-crate/Cargo.toml"), CargoWorkspaceData(packages, mapOf(
+            return CargoWorkspace.deserialize(Paths.get("/my-crate/Cargo.toml"), CargoWorkspaceData(packages, mapOf(
                 packages[0].id to setOf(packages[1].id, packages[2].id)
             )))
-            val stdlib = StandardLibrary.fromFile(stdlib!!)!!
-            return ws.withStdlib(stdlib)
         }
     }
 
+    protected object WithStdlibRustProjectDescriptor : WithRustup(DefaultDescriptor)
+
+    protected object WithStdlibAndDependencyRustProjectDescriptor : WithRustup(WithDependencyRustProjectDescriptor)
+
     protected fun checkAstNotLoaded(fileFilter: VirtualFileFilter) {
         PsiManagerEx.getInstanceEx(project).setAssertOnFileLoadingFilter(fileFilter, testRootDisposable)
+    }
+
+    protected open fun configureByText(text: String) {
+        InlineFile(text.trimIndent())
+    }
+
+    protected open fun configureByFileTree(text: String) {
+        fileTreeFromText(text).createAndOpenFileWithCaretMarker()
     }
 
     companion object {
